@@ -2073,6 +2073,11 @@ lvk::VulkanPipelineBuilder& lvk::VulkanPipelineBuilder::cullMode(VkCullModeFlags
   return *this;
 }
 
+lvk::VulkanPipelineBuilder& lvk::VulkanPipelineBuilder::depthClampEnable(bool enable) {
+  rasterizationState_.depthClampEnable = enable ? VK_TRUE : VK_FALSE;
+  return *this;
+}
+
 lvk::VulkanPipelineBuilder& lvk::VulkanPipelineBuilder::frontFace(VkFrontFace mode) {
   rasterizationState_.frontFace = mode;
   return *this;
@@ -5535,6 +5540,7 @@ VkPipeline lvk::VulkanContext::getVkPipeline(RenderPipelineHandle handle, uint32
                        ? lvk::getPipelineShaderStageCreateInfo(VK_SHADER_STAGE_GEOMETRY_BIT, geomModule->ci, desc.entryPointGeom, &si)
                        : VkPipelineShaderStageCreateInfo{.module = VK_NULL_HANDLE})
       .cullMode(cullModeToVkCullMode(desc.cullMode))
+      .depthClampEnable(desc.depthClampEnable)
       .frontFace(windingModeToVkFrontFace(desc.frontFace))
       .vertexInputState(ciVertexInputState)
       .viewMask(viewMask)

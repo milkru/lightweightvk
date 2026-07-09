@@ -286,6 +286,7 @@ class VulkanPipelineBuilder final {
                                          VkCompareOp compareOp);
   VulkanPipelineBuilder& stencilMasks(VkStencilFaceFlags faceMask, uint32_t compareMask, uint32_t writeMask, uint32_t reference);
   VulkanPipelineBuilder& cullMode(VkCullModeFlags mode);
+  VulkanPipelineBuilder& depthClampEnable(bool enable);
   VulkanPipelineBuilder& frontFace(VkFrontFace mode);
   VulkanPipelineBuilder& polygonMode(VkPolygonMode mode);
   VulkanPipelineBuilder& vertexInputState(const VkPipelineVertexInputStateCreateInfo& state);
