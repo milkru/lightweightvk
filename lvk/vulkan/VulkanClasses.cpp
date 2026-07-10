@@ -2771,8 +2771,9 @@ void lvk::CommandBuffer::cmdBeginRendering(const lvk::RenderPass& renderPass, co
     // handle MSAA
     if (attachment.resolveTexture) {
       LVK_ASSERT(colorSamples > 1);
-      LVK_ASSERT_MSG(colorAttachments[i].storeOp == VK_ATTACHMENT_STORE_OP_DONT_CARE,
-                     "Multisampled attachments should have store op DONT_CARE");
+      // lvk fork (milkru): STORE_OP_STORE is legal alongside a resolve (Vulkan spec) and is
+      // required when the multisampled contents must survive across passes within a frame
+      // (reVC resolves at every swapchain pass end so mid-frame readers see resolved data)
       LVK_ASSERT_MSG(!attachment.resolveTexture.empty(), "Framebuffer attachment should contain a resolve texture");
       lvk::VulkanImage& colorResolveTexture = *ctx_->texturesPool_.get(attachment.resolveTexture);
       colorAttachments[i].resolveImageView =
