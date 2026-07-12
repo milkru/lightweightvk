@@ -3777,7 +3777,7 @@ void lvk::VulkanStagingDevice::imageData2D(VulkanImage& image,
   }
   LVK_ASSERT(desc.size_ >= storageSize);
 
-  const lvk::VulkanImmediateCommands::CommandBufferWrapper& wrapper = ctx_.immediate_->acquire();
+  const lvk::VulkanImmediateCommands::CommandBufferWrapper& wrapper = acquireForUpload();
 
   lvk::VulkanBuffer* stagingBuffer = ctx_.buffersPool_.get(stagingBuffer_);
 
@@ -3879,8 +3879,7 @@ void lvk::VulkanStagingDevice::imageData2D(VulkanImage& image,
 
   image.vkImageLayout_ = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
-  desc.handle_ = ctx_.immediate_->submit(wrapper);
-  insertRegion(desc);
+  finishUpload(desc, wrapper);
 }
 
 void lvk::VulkanStagingDevice::imageData3D(VulkanImage& image,
@@ -4111,6 +4110,58 @@ void lvk::VulkanStagingDevice::ensureStagingBufferSize(VkDeviceSize sizeNeeded) 
   regions_.push_back({0, stagingBufferSize_, SubmitHandle()});
 }
 
+void lvk::VulkanStagingDevice::beginBatch() {
+  LVK_ASSERT_MSG(!batching_, "Nested staging batches are not supported");
+  batching_ = true;
+  batchWrapper_ = nullptr;
+  batchRegions_.clear();
+}
+
+void lvk::VulkanStagingDevice::endBatch() {
+  if (!batching_) {
+    return;
+  }
+  flushBatch();
+  batching_ = false;
+}
+
+const lvk::VulkanImmediateCommands::CommandBufferWrapper& lvk::VulkanStagingDevice::acquireForUpload() {
+  if (!batching_) {
+    return ctx_.immediate_->acquire();
+  }
+  if (!batchWrapper_) {
+    batchWrapper_ = &ctx_.immediate_->acquire();
+  }
+  return *batchWrapper_;
+}
+
+void lvk::VulkanStagingDevice::finishUpload(MemoryRegionDesc& desc, const VulkanImmediateCommands::CommandBufferWrapper& wrapper) {
+  if (!batching_) {
+    desc.handle_ = ctx_.immediate_->submit(wrapper);
+    insertRegion(desc);
+    return;
+  }
+  // the submit handle doesn't exist yet — park the region and stamp it at flush.
+  // Until then the region is NOT reclaimable, which is exactly what we want: its
+  // staging bytes are still referenced by the unsubmitted command buffer.
+  batchRegions_.push_back(desc);
+}
+
+void lvk::VulkanStagingDevice::flushBatch() {
+  if (!batchWrapper_) {
+    LVK_ASSERT(batchRegions_.empty());
+    return;
+  }
+  const SubmitHandle handle = ctx_.immediate_->submit(*batchWrapper_);
+  batchWrapper_ = nullptr;
+
+  for (MemoryRegionDesc& r : batchRegions_) {
+    r.handle_ = handle;
+    insertRegion(r);
+  }
+  batchRegions_.clear();
+}
+
 void lvk::VulkanStagingDevice::insertRegion(const MemoryRegionDesc& region) {
   // keep regions_ sorted by offset so adjacent free regions can be merged
   auto it = regions_.begin();
@@ -4212,6 +4263,12 @@ lvk::VulkanStagingDevice::MemoryRegionDesc lvk::VulkanStagingDevice::getNextFree
 
 void lvk::VulkanStagingDevice::waitAndReset() {
   LVK_PROFILER_FUNCTION_COLOR(LVK_PROFILER_COLOR_WAIT);
+
+  // An open batch holds unsubmitted commands that still read the staging buffer,
+  // and its regions aren't in regions_ yet — recycling those bytes (or destroying
+  // the buffer, as ensureStagingBufferSize does right after this) would corrupt
+  // them. Submit the batch first so its bytes are covered by a real handle.
+  flushBatch();
 
   for (const MemoryRegionDesc& r : regions_) {
     ctx_.immediate_->wait(r.handle_);

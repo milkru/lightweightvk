@@ -537,6 +537,17 @@ class VulkanStagingDevice final {
   VulkanStagingDevice(const VulkanStagingDevice&) = delete;
   VulkanStagingDevice& operator=(const VulkanStagingDevice&) = delete;
 
+  // Batched uploads. Between beginBatch() and endBatch() every staged upload
+  // records into ONE command buffer and nothing is submitted until the batch
+  // ends, instead of one vkQueueSubmit per upload. reVC's boot uploads ~11.6k
+  // textures; a submit each cost ~1.4 s of CPU (submit + the 64-deep immediate
+  // ring wrapping onto fence waits). Nesting is not supported. A batch must not
+  // be left open across unrelated command-buffer recording, so the caller ends it
+  // before it draws (reVC ends it before every loading-screen frame).
+  // The batch also flushes itself when the staging buffer runs out of room.
+  void beginBatch();
+  void endBatch();
+
   void bufferSubData(VulkanBuffer& buffer, size_t dstOffset, size_t size, const void* data);
   void imageData2D(VulkanImage& image,
                    const VkRect2D& imageRegion,
@@ -569,6 +580,16 @@ class VulkanStagingDevice final {
   void insertRegion(const MemoryRegionDesc& region);
   void waitAndReset();
 
+  // Command buffer an upload should record into: the open batch's, or a freshly
+  // acquired one when not batching.
+  const VulkanImmediateCommands::CommandBufferWrapper& acquireForUpload();
+  // Finish one upload: submit immediately when not batching, otherwise park the
+  // region until the batch is submitted (its handle isn't known yet).
+  void finishUpload(MemoryRegionDesc& desc, const VulkanImmediateCommands::CommandBufferWrapper& wrapper);
+  // Submit the open batch and stamp every parked region with its handle. Leaves
+  // the batch open (a new command buffer is acquired lazily).
+  void flushBatch();
+
  private:
   VulkanContext& ctx_;
   lvk::Holder<BufferHandle> stagingBuffer_;
@@ -578,6 +599,11 @@ class VulkanStagingDevice final {
   VkDeviceSize maxBufferSize_ = 0;
   VkDeviceSize minBufferSize_ = 4u * 2048u * 2048u; // ad hoc value to avoid frequent reallocations
   std::vector<MemoryRegionDesc> regions_;
+
+  // open batch (see beginBatch)
+  bool batching_ = false;
+  const VulkanImmediateCommands::CommandBufferWrapper* batchWrapper_ = nullptr;
+  std::vector<MemoryRegionDesc> batchRegions_; // parked until the batch is submitted
 };
 
 class VulkanContext final : public IContext {
