@@ -795,6 +795,11 @@ class VulkanContext final : public IContext {
   VkPhysicalDeviceFeatures2 vkFeatures10_ = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &vkFeatures11_};
 
  public:
+  // the chosen device's queried 1.2 feature bits - the authoritative source for callers
+  // selecting on optional features (drawIndirectCount, samplerFilterMinmax, ...)
+  const VkPhysicalDeviceVulkan12Features& getVkFeatures12() const {
+    return vkFeatures12_;
+  }
   VkPhysicalDeviceRayTracingPipelinePropertiesKHR rayTracingPipelineProperties_ = {
       VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_PROPERTIES_KHR};
   VkPhysicalDeviceAccelerationStructurePropertiesKHR accelerationStructureProperties_ = {
