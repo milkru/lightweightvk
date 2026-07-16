@@ -709,6 +709,19 @@ VkSamplerCreateInfo lvk::samplerStateDescToVkSamplerCreateInfo(const lvk::Sample
       .unnormalizedCoordinates = VK_FALSE,
   };
 
+  if (desc.reductionMode != lvk::SamplerReduction_Disabled) {
+    // static instances so the returned-by-value create info's pNext stays valid
+    static const VkSamplerReductionModeCreateInfo kReductionMin = {
+        .sType = VK_STRUCTURE_TYPE_SAMPLER_REDUCTION_MODE_CREATE_INFO,
+        .reductionMode = VK_SAMPLER_REDUCTION_MODE_MIN,
+    };
+    static const VkSamplerReductionModeCreateInfo kReductionMax = {
+        .sType = VK_STRUCTURE_TYPE_SAMPLER_REDUCTION_MODE_CREATE_INFO,
+        .reductionMode = VK_SAMPLER_REDUCTION_MODE_MAX,
+    };
+    ci.pNext = desc.reductionMode == lvk::SamplerReduction_Min ? &kReductionMin : &kReductionMax;
+  }
+
   if (desc.maxAnisotropic > 1) {
     const bool isAnisotropicFilteringSupported = limits.maxSamplerAnisotropy > 1;
     LVK_ASSERT_MSG(isAnisotropicFilteringSupported, "Anisotropic filtering is not supported by the device.");

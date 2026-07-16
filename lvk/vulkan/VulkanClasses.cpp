@@ -5488,7 +5488,7 @@ VkPipeline lvk::VulkanContext::getVkPipeline(RenderPipelineHandle handle, uint32
   const lvk::ShaderModuleState* meshModule = shaderModulesPool_.get(desc.smMesh);
 
   LVK_ASSERT(vertModule || meshModule);
-  LVK_ASSERT(fragModule);
+  LVK_ASSERT(fragModule || rps->desc_.getNumColorAttachments() == 0);
 
   if (tescModule || teseModule || desc.patchControlPoints) {
     LVK_ASSERT_MSG(tescModule && teseModule, "Both tessellation control and evaluation shaders should be provided");
@@ -5589,7 +5589,9 @@ VkPipeline lvk::VulkanContext::getVkPipeline(RenderPipelineHandle handle, uint32
       .shaderStage(meshModule
                        ? lvk::getPipelineShaderStageCreateInfo(VK_SHADER_STAGE_MESH_BIT_EXT, meshModule->ci, desc.entryPointMesh, &si)
                        : lvk::getPipelineShaderStageCreateInfo(VK_SHADER_STAGE_VERTEX_BIT, vertModule->ci, desc.entryPointVert, &si))
-      .shaderStage(lvk::getPipelineShaderStageCreateInfo(VK_SHADER_STAGE_FRAGMENT_BIT, fragModule->ci, desc.entryPointFrag, &si))
+      .shaderStage(fragModule
+                       ? lvk::getPipelineShaderStageCreateInfo(VK_SHADER_STAGE_FRAGMENT_BIT, fragModule->ci, desc.entryPointFrag, &si)
+                       : VkPipelineShaderStageCreateInfo{.module = VK_NULL_HANDLE})
       .shaderStage(tescModule ? lvk::getPipelineShaderStageCreateInfo(
                                     VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT, tescModule->ci, desc.entryPointTesc, &si)
                               : VkPipelineShaderStageCreateInfo{.module = VK_NULL_HANDLE})
@@ -6001,8 +6003,10 @@ lvk::Holder<lvk::RenderPipelineHandle> lvk::VulkanContext::createRenderPipeline(
     }
   }
 
-  if (!LVK_VERIFY(desc.smFrag.valid())) {
-    Result::setResult(outResult, Result::Code::ArgumentOutOfRange, "Missing fragment shader");
+  // the fragment shader is optional for depth/stencil-only pipelines (shadow maps, Hi-Z
+  // prepasses) - the rasterizer runs without one as long as nothing writes color
+  if (!LVK_VERIFY(desc.smFrag.valid() || desc.getNumColorAttachments() == 0)) {
+    Result::setResult(outResult, Result::Code::ArgumentOutOfRange, "Missing fragment shader (required with color attachments)");
     return {};
   }
 
@@ -7528,6 +7532,7 @@ lvk::Result lvk::VulkanContext::initContext(const HWDeviceDesc& desc) {
       .descriptorBindingPartiallyBound = VK_TRUE,
       .descriptorBindingVariableDescriptorCount = VK_TRUE,
       .runtimeDescriptorArray = VK_TRUE,
+      .samplerFilterMinmax = vkFeatures12_.samplerFilterMinmax, // enable if supported
       .scalarBlockLayout = VK_TRUE,
       .uniformBufferStandardLayout = VK_TRUE,
       .hostQueryReset = vkFeatures12_.hostQueryReset, // enable if supported

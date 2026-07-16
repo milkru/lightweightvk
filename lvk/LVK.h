@@ -258,6 +258,10 @@ enum TextureType : uint8_t {
 
 enum SamplerFilter : uint8_t { SamplerFilter_Nearest = 0, SamplerFilter_Linear };
 enum SamplerMip : uint8_t { SamplerMip_Disabled = 0, SamplerMip_Nearest, SamplerMip_Linear };
+// VkSamplerReductionModeCreateInfo: the filter footprint reduces by min/max instead of
+// averaging (Hi-Z single-tap bounds). Requires VkPhysicalDeviceVulkan12Features::samplerFilterMinmax
+// (enabled if supported) - the caller must check availability before requesting it.
+enum SamplerReduction : uint8_t { SamplerReduction_Disabled = 0, SamplerReduction_Min, SamplerReduction_Max };
 enum SamplerWrap : uint8_t {
   SamplerWrap_Repeat = 0,
   SamplerWrap_Clamp, // to edge
@@ -417,6 +421,7 @@ struct SamplerStateDesc {
   uint8_t mipLodMax = 15;
   uint8_t maxAnisotropic = 1;
   bool depthCompareEnabled = false;
+  SamplerReduction reductionMode = SamplerReduction_Disabled;
   const char* debugName = "";
 };
 
