@@ -4592,6 +4592,10 @@ lvk::Holder<lvk::BufferHandle> lvk::VulkanContext::createBuffer(const BufferDesc
     usageFlags |= VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
   }
 
+  if (desc.usage & BufferUsageBits_TransferSrc) {
+    usageFlags |= VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+  }
+
   LVK_ASSERT_MSG(usageFlags, "Invalid buffer usage");
 
   const VkMemoryPropertyFlags memFlags = storageTypeToVkMemoryPropertyFlags(desc.storage);

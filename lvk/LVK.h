@@ -811,7 +811,7 @@ struct Framebuffer final {
   }
 };
 
-enum BufferUsageBits : uint8_t {
+enum BufferUsageBits : uint16_t {
   BufferUsageBits_Index = 1 << 0,
   BufferUsageBits_Vertex = 1 << 1,
   BufferUsageBits_Uniform = 1 << 2,
@@ -820,11 +820,14 @@ enum BufferUsageBits : uint8_t {
   // ray tracing
   BufferUsageBits_ShaderBindingTable = 1 << 5,
   BufferUsageBits_AccelStructBuildInputReadOnly = 1 << 6,
-  BufferUsageBits_AccelStructStorage = 1 << 7
+  BufferUsageBits_AccelStructStorage = 1 << 7,
+  // non-Device buffers only get TRANSFER_SRC implicitly when storage == StorageType_Device;
+  // set this to use a host-visible buffer as a vkCmdCopyBuffer() source
+  BufferUsageBits_TransferSrc = 1 << 8,
 };
 
 struct BufferDesc final {
-  uint8_t usage = 0;
+  uint16_t usage = 0;
   StorageType storage = StorageType_HostVisible;
   size_t size = 0;
   const void* data = nullptr;
