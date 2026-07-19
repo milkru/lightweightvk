@@ -4334,10 +4334,6 @@ lvk::VulkanContext::~VulkanContext() {
     }
   }
 
-  // drain the deferred texture pool-slot releases (and everything queued with them) before the leak checks, so
-  // already-destroyed-but-deferred textures are not reported as leaks
-  waitDeferredTasks();
-
   if (shaderModulesPool_.numObjects()) {
     LLOGW("Leaked %u shader modules\n", shaderModulesPool_.numObjects());
   }
@@ -6176,17 +6172,9 @@ void lvk::VulkanContext::destroy(BufferHandle handle) {
 void lvk::VulkanContext::destroy(lvk::TextureHandle handle) {
   LVK_PROFILER_FUNCTION_COLOR(LVK_PROFILER_COLOR_DESTROY);
 
-  // The pool slot is released in a deferred task, not immediately: freeing it here lets a same-frame createTexture() recycle this
-  // index and repoint the bindless descriptor while in-flight frames still reference the old texture through it — a stale-but-valid
-  // descriptor the validation layers cannot see, whose accesses land in the newly created texture. The deferred release runs after
-  // the queued vkDestroy tasks above it (same submit handle, FIFO), so the slot outlives its Vulkan objects by exactly one drain.
   SCOPE_EXIT {
-    deferredTask(std::packaged_task<void()>([this, handle]() {
-      if (handle.index() < texturesPool_.objects_.size()) { // context teardown clears the pool before the final drain
-        texturesPool_.destroy(handle);
-        awaitingCreation_ = true; // make the validation layers happy
-      }
-    }));
+    texturesPool_.destroy(handle);
+    awaitingCreation_ = true; // make the validation layers happy
   };
 
   lvk::VulkanImage* tex = texturesPool_.get(handle);
