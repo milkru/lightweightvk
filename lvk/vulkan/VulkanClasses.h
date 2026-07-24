@@ -472,6 +472,7 @@ class CommandBuffer final : public ICommandBuffer {
                     const TextureLayers& dstLayers) override;
   void cmdGenerateMipmap(TextureHandle handle) override;
   void cmdUpdateTLAS(AccelStructHandle handle, BufferHandle instancesBuffer) override;
+  void cmdBuildTLAS(AccelStructHandle handle, BufferHandle instancesBuffer, uint32_t numInstances) override;
 
   operator VkCommandBuffer() const
 #if defined(LVK_WITH_RAW_VULKAN)

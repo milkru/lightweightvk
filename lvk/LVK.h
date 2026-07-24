@@ -1117,6 +1117,12 @@ class ICommandBuffer {
                             const TextureLayers& dstLayers = {}) = 0;
   virtual void cmdGenerateMipmap(TextureHandle handle) = 0;
   virtual void cmdUpdateTLAS(AccelStructHandle handle, BufferHandle instancesBuffer) = 0;
+  // Full REBUILD of a TLAS with a caller-supplied instance count, recorded into
+  // this command buffer. Unlike cmdUpdateTLAS() (a refit, locked to the count the
+  // TLAS was created with) this lets a scene submit only its live instances, so
+  // unused capacity never enters the BVH. numInstances must not exceed the count
+  // the TLAS was created with (its storage is sized for that).
+  virtual void cmdBuildTLAS(AccelStructHandle handle, BufferHandle instancesBuffer, uint32_t numInstances) = 0;
 
 #if defined(LVK_WITH_RAW_VULKAN)
   virtual operator VkCommandBuffer() const = 0;
