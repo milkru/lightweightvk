@@ -1123,6 +1123,11 @@ class ICommandBuffer {
   // unused capacity never enters the BVH. numInstances must not exceed the count
   // the TLAS was created with (its storage is sized for that).
   virtual void cmdBuildTLAS(AccelStructHandle handle, BufferHandle instancesBuffer, uint32_t numInstances) = 0;
+  // Full REBUILD of a BLAS from `desc`, recorded into this command buffer. The
+  // structure keeps the storage it was created with, so a deforming mesh
+  // (skinned character) can be rebuilt every frame in place. The geometry in
+  // `desc` must not exceed the size the BLAS was created with.
+  virtual void cmdBuildBLAS(AccelStructHandle handle, const AccelStructDesc& desc) = 0;
 
 #if defined(LVK_WITH_RAW_VULKAN)
   virtual operator VkCommandBuffer() const = 0;

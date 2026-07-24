@@ -3770,6 +3770,85 @@ void lvk::CommandBuffer::cmdBuildTLAS(AccelStructHandle handle, BufferHandle ins
   }
 }
 
+void lvk::CommandBuffer::cmdBuildBLAS(AccelStructHandle handle, const AccelStructDesc& desc) {
+  LVK_PROFILER_GPU_ZONE("cmdBuildBLAS()", ctx_, wrapper_->cmdBuf_, LVK_PROFILER_COLOR_CMD_RTX);
+
+  if (handle.empty()) {
+    return;
+  }
+
+  lvk::AccelerationStructure* as = ctx_->accelStructuresPool_.get(handle);
+
+  VkAccelerationStructureGeometryKHR geometry{};
+  VkAccelerationStructureBuildSizesInfoKHR buildSizes{};
+  ctx_->getBuildInfoBLAS(desc, geometry, buildSizes);
+
+  if (!as->scratchBuffer.valid() || getBufferSize(ctx_, as->scratchBuffer) < buildSizes.buildScratchSize) {
+    LLOGD("Recreating scratch buffer for BLAS build");
+    as->scratchBuffer = ctx_->createBuffer(lvk::BufferDesc{.usage = lvk::BufferUsageBits_Storage,
+                                                           .storage = lvk::StorageType_Device,
+                                                           .size = buildSizes.buildScratchSize,
+                                                           .debugName = "scratchBuffer"},
+                                           nullptr,
+                                           nullptr);
+  }
+
+  const VkAccelerationStructureBuildGeometryInfoKHR buildInfo = {
+      .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR,
+      .type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR,
+      .flags = buildFlagsToVkBuildAccelerationStructureFlags(desc.buildFlags),
+      .mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR,
+      .dstAccelerationStructure = as->vkHandle,
+      .geometryCount = 1,
+      .pGeometries = &geometry,
+      .scratchData = {.deviceAddress = getAlignedAddress(
+                          ctx_->gpuAddress(as->scratchBuffer),
+                          ctx_->accelerationStructureProperties_.minAccelerationStructureScratchOffsetAlignment)},
+  };
+
+  const VkAccelerationStructureBuildRangeInfoKHR range = {
+      .primitiveCount = desc.buildRange.primitiveCount,
+      .primitiveOffset = desc.buildRange.primitiveOffset,
+      .firstVertex = desc.buildRange.firstVertex,
+      .transformOffset = desc.buildRange.transformOffset,
+  };
+  const VkAccelerationStructureBuildRangeInfoKHR* ranges[] = {&range};
+
+  {
+    // the vertex source is produced by a compute pass in the same frame
+    const VkMemoryBarrier2 barrier = {
+        .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+        .srcStageMask = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+        .srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT,
+        .dstStageMask = VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
+        .dstAccessMask = VK_ACCESS_MEMORY_READ_BIT,
+    };
+    const VkDependencyInfo dependencyInfo{
+        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &barrier};
+    vkCmdPipelineBarrier2(wrapper_->cmdBuf_, &dependencyInfo);
+  }
+
+  vkCmdBuildAccelerationStructuresKHR(wrapper_->cmdBuf_, 1, &buildInfo, ranges);
+
+  {
+    const VkBufferMemoryBarrier2 barrier = {
+        .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
+        .srcStageMask = VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
+        .srcAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT,
+        // the TLAS build that references this BLAS comes next, then ray queries
+        .dstStageMask = VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR | VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR |
+                        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+        .dstAccessMask = VK_ACCESS_MEMORY_READ_BIT,
+        .buffer = getVkBuffer(ctx_, handle),
+        .offset = 0,
+        .size = VK_WHOLE_SIZE,
+    };
+    const VkDependencyInfo dependencyInfo{
+        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .bufferMemoryBarrierCount = 1, .pBufferMemoryBarriers = &barrier};
+    vkCmdPipelineBarrier2(wrapper_->cmdBuf_, &dependencyInfo);
+  }
+}
+
 lvk::VulkanStagingDevice::VulkanStagingDevice(VulkanContext& ctx) : ctx_(ctx) {
   LVK_PROFILER_FUNCTION();
 

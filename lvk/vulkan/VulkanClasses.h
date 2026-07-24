@@ -473,6 +473,7 @@ class CommandBuffer final : public ICommandBuffer {
   void cmdGenerateMipmap(TextureHandle handle) override;
   void cmdUpdateTLAS(AccelStructHandle handle, BufferHandle instancesBuffer) override;
   void cmdBuildTLAS(AccelStructHandle handle, BufferHandle instancesBuffer, uint32_t numInstances) override;
+  void cmdBuildBLAS(AccelStructHandle handle, const AccelStructDesc& desc) override;
 
   operator VkCommandBuffer() const
 #if defined(LVK_WITH_RAW_VULKAN)
@@ -778,6 +779,8 @@ class VulkanContext final : public IContext {
  private:
   friend class lvk::VulkanSwapchain;
   friend class lvk::VulkanStagingDevice;
+  // cmdBuildBLAS() reuses getBuildInfoBLAS() to record an in-place rebuild
+  friend class lvk::CommandBuffer;
 
   VkInstance vkInstance_ = VK_NULL_HANDLE;
   VkDebugUtilsMessengerEXT vkDebugUtilsMessenger_ = VK_NULL_HANDLE;
