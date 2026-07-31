@@ -474,6 +474,7 @@ class CommandBuffer final : public ICommandBuffer {
   void cmdUpdateTLAS(AccelStructHandle handle, BufferHandle instancesBuffer) override;
   void cmdBuildTLAS(AccelStructHandle handle, BufferHandle instancesBuffer, uint32_t numInstances) override;
   void cmdBuildBLAS(AccelStructHandle handle, const AccelStructDesc& desc) override;
+  void cmdBuildBLASBatch(const AccelStructHandle* handles, const AccelStructDesc* descs, uint32_t count) override;
 
   operator VkCommandBuffer() const
 #if defined(LVK_WITH_RAW_VULKAN)

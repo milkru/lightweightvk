@@ -1128,6 +1128,14 @@ class ICommandBuffer {
   // (skinned character) can be rebuilt every frame in place. The geometry in
   // `desc` must not exceed the size the BLAS was created with.
   virtual void cmdBuildBLAS(AccelStructHandle handle, const AccelStructDesc& desc) = 0;
+  // Rebuild SEVERAL BLASes as one batch. Identical to calling cmdBuildBLAS() per
+  // structure, except the whole batch is recorded as a single
+  // vkCmdBuildAccelerationStructuresKHR with ONE barrier on each side. Per-call
+  // building costs a barrier pair and a build launch EACH, which dominates when
+  // the structures are small (a crowd of skinned characters rebuilt per frame):
+  // the builds are independent — separate destinations, separate scratch — so
+  // nothing needs ordering between them.
+  virtual void cmdBuildBLASBatch(const AccelStructHandle* handles, const AccelStructDesc* descs, uint32_t count) = 0;
 
 #if defined(LVK_WITH_RAW_VULKAN)
   virtual operator VkCommandBuffer() const = 0;
