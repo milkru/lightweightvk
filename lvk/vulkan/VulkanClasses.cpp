@@ -7883,6 +7883,14 @@ lvk::Result lvk::VulkanContext::initContext(const HWDeviceDesc& desc) {
       .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR,
       .rayQuery = VK_TRUE,
   };
+  // quad operations in COMPUTE (QuadReadAcrossX/Y). Denoisers written for
+  // compute lean on them, and the SPIR-V declares the capability whether or not
+  // the feature was enabled — so leaving it off is a validation error on a
+  // shader the device runs anyway.
+  VkPhysicalDeviceComputeShaderDerivativesFeaturesKHR computeShaderDerivativesFeatures = {
+      .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COMPUTE_SHADER_DERIVATIVES_FEATURES_KHR,
+      .computeDerivativeGroupQuads = VK_TRUE,
+  };
   VkPhysicalDeviceRayTracingInvocationReorderFeaturesEXT rayTracingInvocationReorderFeatures = {
       .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_INVOCATION_REORDER_FEATURES_EXT,
       .rayTracingInvocationReorder = VK_TRUE,
@@ -7991,6 +7999,8 @@ lvk::Result lvk::VulkanContext::initContext(const HWDeviceDesc& desc) {
                         has_KHR_acceleration_structure_,
                         &accelerationStructureFeatures);
   addOptionalExtension(VK_KHR_RAY_QUERY_EXTENSION_NAME, has_KHR_ray_query_, &rayQueryFeatures);
+  addOptionalExtension(
+      VK_KHR_COMPUTE_SHADER_DERIVATIVES_EXTENSION_NAME, has_KHR_compute_shader_derivatives_, &computeShaderDerivativesFeatures);
   addOptionalExtension(VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME, has_KHR_ray_tracing_pipeline_, &rayTracingFeatures);
   addOptionalExtension(
       VK_EXT_RAY_TRACING_INVOCATION_REORDER_EXTENSION_NAME, has_EXT_ray_tracing_invocation_reorder, &rayTracingInvocationReorderFeatures);
