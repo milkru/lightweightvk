@@ -73,7 +73,13 @@ enum Bindings {
   kBinding_StorageImages = 2,
   kBinding_YUVImages = 3,
   kBinding_AccelerationStructures = 4,
-  kBinding_NumBindings = 5,
+  // Multisampled sampled images. They cannot go in kBinding_Textures — a
+  // texture2D and a texture2DMS are different types in GLSL — so they get their
+  // own array, letting a shader read individual samples (texelFetch with a
+  // sample index) instead of only ever seeing a hardware resolve. The array is
+  // only populated once a multisampled texture exists.
+  kBinding_TexturesMS = 5,
+  kBinding_NumBindings = 6,
 };
 
 const uint32_t kDescriptorSet_InputAttachments = 1; // for VkDescriptorSetLayout in getVkPipeline()
@@ -8453,7 +8459,13 @@ lvk::Result lvk::VulkanContext::growDescriptorPool(VulkanContext::DescriptorSet&
                          (uint32_t)immutableSamplers.size() ? (workaround_noYcbcrSamplerArray_ ? 1u : maxTextures) : 0,
                          stageFlags,
                          immutableSamplersData),
-      lvk::getDSLBinding(kBinding_AccelerationStructures, VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, maxAccelStructs, stageFlags),
+      // a descriptorCount of 0 leaves the binding declared but unused, which is
+      // how an absent extension is expressed now that it is no longer last
+      lvk::getDSLBinding(kBinding_AccelerationStructures,
+                         VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR,
+                         has_KHR_acceleration_structure_ ? maxAccelStructs : 0,
+                         stageFlags),
+      lvk::getDSLBinding(kBinding_TexturesMS, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, maxTextures, stageFlags),
   };
   const uint32_t flags = VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT | VK_DESCRIPTOR_BINDING_UPDATE_UNUSED_WHILE_PENDING_BIT |
                          VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT;
@@ -8463,14 +8475,14 @@ lvk::Result lvk::VulkanContext::growDescriptorPool(VulkanContext::DescriptorSet&
   }
   const VkDescriptorSetLayoutBindingFlagsCreateInfo setLayoutBindingFlagsCI = {
       .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO_EXT,
-      .bindingCount = uint32_t(has_KHR_acceleration_structure_ ? kBinding_NumBindings : kBinding_NumBindings - 1),
+      .bindingCount = kBinding_NumBindings,
       .pBindingFlags = bindingFlags,
   };
   const VkDescriptorSetLayoutCreateInfo dslci = {
       .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
       .pNext = &setLayoutBindingFlagsCI,
       .flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT_EXT,
-      .bindingCount = uint32_t(has_KHR_acceleration_structure_ ? kBinding_NumBindings : kBinding_NumBindings - 1),
+      .bindingCount = kBinding_NumBindings,
       .pBindings = bindings,
   };
   VK_ASSERT(vkCreateDescriptorSetLayout(vkDevice_, &dslci, nullptr, &dset.vkDSL));
@@ -8483,8 +8495,9 @@ lvk::Result lvk::VulkanContext::growDescriptorPool(VulkanContext::DescriptorSet&
         VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, maxTextures},
         VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_SAMPLER, maxSamplers},
         VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, maxTextures},
+        VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, maxTextures}, // multisampled
     };
-    uint32_t numPoolSizes = 3;
+    uint32_t numPoolSizes = 4;
     if (!immutableSamplers.empty()) {
       poolSizes[numPoolSizes++] = VkDescriptorPoolSize{
           VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
@@ -8694,10 +8707,23 @@ void lvk::VulkanContext::checkAndUpdateDescriptorSets() {
   // 1. Sampled and storage images
   std::vector<VkDescriptorImageInfo> infoSampledImages;
   std::vector<VkDescriptorImageInfo> infoStorageImages;
+  std::vector<VkDescriptorImageInfo> infoSampledImagesMS;
   std::vector<VkDescriptorImageInfo> infoYUVImages;
 
   infoSampledImages.reserve(texturesPool_.numObjects());
   infoStorageImages.reserve(texturesPool_.numObjects());
+  infoSampledImagesMS.reserve(texturesPool_.numObjects());
+
+  // the multisampled array needs a multisampled view to pad its unused slots
+  // with: a single-sample view in a texture2DMS slot is the wrong type. Without
+  // one there is nothing multisampled to bind at all, so the array stays empty.
+  VkImageView dummyImageViewMS = VK_NULL_HANDLE;
+  for (const VulkanImage& img : texturesPool_.objects_) {
+    if (img.vkSamples_ != VK_SAMPLE_COUNT_1_BIT && img.isSampledImage() && img.imageView_) {
+      dummyImageViewMS = img.imageView_;
+      break;
+    }
+  }
 
   const bool hasYcbcrSamplers = pimpl_->numYcbcrSamplers_ > 0;
 
@@ -8728,6 +8754,14 @@ void lvk::VulkanContext::checkAndUpdateDescriptorSets() {
         .imageView = isStorageImage ? storageView : dummyImageView,
         .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
     });
+    if (dummyImageViewMS) {
+      const bool isSampledImageMS = !isTextureAvailable && img.isSampledImage() && view;
+      infoSampledImagesMS.push_back(VkDescriptorImageInfo{
+          .sampler = VK_NULL_HANDLE,
+          .imageView = isSampledImageMS ? view : dummyImageViewMS,
+          .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+      });
+    }
     if (hasYcbcrSamplers && !workaround_noYcbcrSamplerArray_) {
       // we don't need to update this if there're no YUV samplers
       infoYUVImages.push_back(VkDescriptorImageInfo{
@@ -8808,6 +8842,18 @@ void lvk::VulkanContext::checkAndUpdateDescriptorSets() {
         .descriptorCount = (uint32_t)infoSampledImages.size(),
         .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
         .pImageInfo = infoSampledImages.data(),
+    };
+  }
+
+  if (!infoSampledImagesMS.empty()) {
+    write[numWrites++] = VkWriteDescriptorSet{
+        .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+        .dstSet = dset.vkDSet,
+        .dstBinding = kBinding_TexturesMS,
+        .dstArrayElement = 0,
+        .descriptorCount = (uint32_t)infoSampledImagesMS.size(),
+        .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+        .pImageInfo = infoSampledImagesMS.data(),
     };
   }
 
