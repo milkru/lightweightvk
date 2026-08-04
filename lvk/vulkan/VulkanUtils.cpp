@@ -613,12 +613,15 @@ glslang_resource_t lvk::getGlslangResource(const VkPhysicalDeviceLimits& limits)
       .max_mesh_view_count_nv = 4,
       .max_mesh_output_vertices_ext = 256,
       .max_mesh_output_primitives_ext = 512,
-      .max_mesh_work_group_size_x_ext = 32,
-      .max_mesh_work_group_size_y_ext = 1,
-      .max_mesh_work_group_size_z_ext = 1,
-      .max_task_work_group_size_x_ext = 32,
-      .max_task_work_group_size_y_ext = 1,
-      .max_task_work_group_size_z_ext = 1,
+      // VK_EXT_mesh_shader's REQUIRED minimum for maxMeshWorkGroupSize is
+      // {128, 128, 128} — the 32 here was the VK_NV_mesh_shader floor and it
+      // rejected any conformant EXT mesh shader with more than 32 invocations.
+      .max_mesh_work_group_size_x_ext = 128,
+      .max_mesh_work_group_size_y_ext = 128,
+      .max_mesh_work_group_size_z_ext = 128,
+      .max_task_work_group_size_x_ext = 128,	// ... and the same for task shaders
+      .max_task_work_group_size_y_ext = 128,
+      .max_task_work_group_size_z_ext = 128,
       .max_mesh_view_count_ext = 4,
       .maxDualSourceDrawBuffersEXT = 1,
       .limits =
