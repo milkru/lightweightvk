@@ -667,6 +667,7 @@ class VulkanContext final : public IContext {
   Format getFormat(TextureHandle handle) const override;
 
   TextureHandle getCurrentSwapchainTexture() override;
+  [[nodiscard]] Dimensions getSwapchainExtent() const override;
   Format getSwapchainFormat() const override;
   ColorSpace getSwapchainColorSpace() const override;
   uint32_t getSwapchainCurrentImageIndex() const override;

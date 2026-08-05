@@ -7107,6 +7107,14 @@ lvk::ShaderModuleState lvk::VulkanContext::createShaderModuleFromSlang(ShaderSta
   return createShaderModuleFromSPIRV(spirv.data(), spirv.size(), debugName, outResult);
 }
 
+lvk::Dimensions lvk::VulkanContext::getSwapchainExtent() const {
+  if (!hasSwapchain()) {
+    return {};
+  }
+
+  return {swapchain_->width_, swapchain_->height_, 1};
+}
+
 lvk::Format lvk::VulkanContext::getSwapchainFormat() const {
   if (!hasSwapchain()) {
     return Format_Invalid;

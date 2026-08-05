@@ -1217,6 +1217,10 @@ class IContext {
 #pragma endregion
 
   virtual TextureHandle getCurrentSwapchainTexture() = 0;
+  // Swapchain size without acquiring an image. `getCurrentSwapchainTexture()`
+  // blocks (semaphore reuse, present fence, and the presentation engine), so
+  // anything that only needs the size must not go through it.
+  [[nodiscard]] virtual Dimensions getSwapchainExtent() const = 0;
   virtual Format getSwapchainFormat() const = 0;
   virtual ColorSpace getSwapchainColorSpace() const = 0;
   virtual uint32_t getSwapchainCurrentImageIndex() const = 0;
