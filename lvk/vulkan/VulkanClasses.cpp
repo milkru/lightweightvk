@@ -7,6 +7,7 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+#include <chrono>	// getCurrentTexture()'s per-wait timing (lastAcquireWaitMs_)
 #include <cstring>
 #include <vector>
 
@@ -1456,6 +1457,11 @@ lvk::TextureHandle lvk::VulkanSwapchain::getCurrentTexture() {
   LVK_PROFILER_FUNCTION();
 
   if (getNextImage_) {
+    using clk = std::chrono::high_resolution_clock;
+    auto ms = [](clk::time_point a, clk::time_point b) {
+      return std::chrono::duration<double, std::milli>(b - a).count();
+    };
+    const clk::time_point t0 = clk::now();
     const VkSemaphoreWaitInfo waitInfo = {
         .sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO,
         .semaphoreCount = 1,
@@ -1463,6 +1469,7 @@ lvk::TextureHandle lvk::VulkanSwapchain::getCurrentTexture() {
         .pValues = &timelineWaitValues_[currentImageIndex_],
     };
     VK_ASSERT(vkWaitSemaphores(device_, &waitInfo, UINT64_MAX));
+    const clk::time_point t1 = clk::now();
 
     VkFence acquireFence = VK_NULL_HANDLE;
 
@@ -1482,12 +1489,17 @@ lvk::TextureHandle lvk::VulkanSwapchain::getCurrentTexture() {
       acquireFence = acquireFence_[currentImageIndex_];
     }
 
+    const clk::time_point t2 = clk::now();
     VkSemaphore acquireSemaphore = acquireSemaphore_[currentImageIndex_];
     // when timeout is set to UINT64_MAX, we wait until the next image has been acquired
     VkResult r = vkAcquireNextImageKHR(device_, swapchain_, UINT64_MAX, acquireSemaphore, acquireFence, &currentImageIndex_);
     if (r != VK_SUCCESS && r != VK_SUBOPTIMAL_KHR && r != VK_ERROR_OUT_OF_DATE_KHR) {
       VK_ASSERT(r);
     }
+    const clk::time_point t3 = clk::now();
+    lastAcquireWaitMs_[0] = ms(t0, t1);
+    lastAcquireWaitMs_[1] = ms(t1, t2);
+    lastAcquireWaitMs_[2] = ms(t2, t3);
     getNextImage_ = false;
     ctx_.immediate_->waitSemaphore(acquireSemaphore);
   }

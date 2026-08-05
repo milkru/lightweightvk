@@ -174,6 +174,11 @@ class VulkanSwapchain final {
   VkFence presentFence_[LVK_MAX_SWAPCHAIN_IMAGES] = {};
   VkFence acquireFence_[LVK_MAX_SWAPCHAIN_IMAGES] = {}; // remove once VK_EXT_swapchain_maintenance1 becomes mandatory
   uint64_t timelineWaitValues_[LVK_MAX_SWAPCHAIN_IMAGES] = {};
+  // getCurrentTexture() blocks in up to three places; a caller measuring frame
+  // pacing needs to know WHICH, because they mean different things: [0] the
+  // timeline wait for the image's last submit, [1] the present/acquire fence,
+  // [2] vkAcquireNextImageKHR itself. Milliseconds, last call.
+  double lastAcquireWaitMs_[3] = {};
 };
 
 class VulkanImmediateCommands final {
