@@ -803,8 +803,8 @@ VkSurfaceFormatKHR chooseSwapSurfaceFormat(const std::vector<VkSurfaceFormatKHR>
 namespace lvk {
 
 struct DeferredTask {
-  DeferredTask(std::packaged_task<void()>&& task, SubmitHandle handle, uint32_t submitId)
-  : task_(std::move(task)), handle_(handle), queuedSubmitId_(submitId) {}
+  DeferredTask(std::packaged_task<void()>&& task, SubmitHandle handle, uint32_t submitId, uint64_t presentId)
+  : task_(std::move(task)), handle_(handle), queuedSubmitId_(submitId), presentId_(presentId) {}
   std::packaged_task<void()> task_;
   SubmitHandle handle_;
   // The submit counter when this was queued. The handle alone is not enough:
@@ -812,6 +812,11 @@ struct DeferredTask {
   // frame may bind the same object before that one retires. Waiting for the
   // submits queued after this task as well is what makes the free safe.
   uint32_t queuedSubmitId_ = 0;
+  // The newest present queued when this was queued. The task must also wait
+  // for that present to COMPLETE: the driver processes a present on a worker
+  // thread of its own, and a vkDestroy racing it crashes inside that thread
+  // (see processDeferredTasks()).
+  uint64_t presentId_ = 0;
 };
 
 struct VulkanContextImpl final {
@@ -1383,16 +1388,19 @@ lvk::VulkanSwapchain::VulkanSwapchain(VulkanContext& ctx, uint32_t width, uint32
   char debugNameImage[256] = {0};
   char debugNameImageView[256] = {0};
 
-  // create images, image views and framebuffers
-  for (uint32_t i = 0; i < numSwapchainImages_; i++) {
+  // the acquire semaphore/fence ring (frame-indexed, deeper than any swapchain — see the header)
+  for (uint32_t i = 0; i < (uint32_t)kAcquireRing; i++) {
     acquireSemaphore_[i] = lvk::createSemaphore(device_, "Semaphore: swapchain-acquire");
 
     if (!ctx_.has_KHR_swapchain_maintenance1_) {
       char debugNameFence[256] = {0};
-      (void)snprintf(debugNameFence, sizeof(debugNameFence) - 1, "Fence: swapchain %u", i);
+      (void)snprintf(debugNameFence, sizeof(debugNameFence) - 1, "Fence: swapchain-acquire %u", i);
       acquireFence_[i] = lvk::createFence(device_, debugNameFence, true);
     }
+  }
 
+  // create images, image views and framebuffers
+  for (uint32_t i = 0; i < numSwapchainImages_; i++) {
     (void)snprintf(debugNameImage, sizeof(debugNameImage) - 1, "Image: swapchain %u", i);
     (void)snprintf(debugNameImageView, sizeof(debugNameImageView) - 1, "Image View: swapchain %u", i);
     VulkanImage image = {
@@ -1426,6 +1434,10 @@ lvk::VulkanSwapchain::VulkanSwapchain(VulkanContext& ctx, uint32_t width, uint32
 }
 
 lvk::VulkanSwapchain::~VulkanSwapchain() {
+  // every teardown/recreate path waits the device idle first, and a destroyed
+  // swapchain has no presents left to guard — release the destruction gate so
+  // tasks queued against in-flight presents don't wait forever
+  ctx_.presentsCompleted_ = ctx_.presentsQueued_;
   for (TextureHandle handle : swapchainTextures_) {
     ctx_.destroy(handle);
   }
@@ -1468,45 +1480,85 @@ lvk::TextureHandle lvk::VulkanSwapchain::getCurrentTexture() {
       return std::chrono::duration<double, std::milli>(b - a).count();
     };
     const clk::time_point t0 = clk::now();
-    const VkSemaphoreWaitInfo waitInfo = {
-        .sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO,
-        .semaphoreCount = 1,
-        .pSemaphores = &ctx_.timelineSemaphore_,
-        .pValues = &timelineWaitValues_[currentImageIndex_],
-    };
-    VK_ASSERT(vkWaitSemaphores(device_, &waitInfo, UINT64_MAX));
+    // Ring-entry reuse guard (see kAcquireRing in the header): the submit that
+    // consumed this entry signaled the context timeline, kAcquireRing frames
+    // back — so this wait is normally instant. Waiting for the PREVIOUS
+    // frame's presenting submit instead (the per-image-slot scheme) put a full
+    // GPU-tail stall in front of every acquire.
+    const uint32_t ringIdx = (uint32_t)(currentFrameIndex_ % kAcquireRing);
+    if (acquireSemConsumedValue_[ringIdx]) {
+      const VkSemaphoreWaitInfo ringWait = {
+          .sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO,
+          .semaphoreCount = 1,
+          .pSemaphores = &ctx_.timelineSemaphore_,
+          .pValues = &acquireSemConsumedValue_[ringIdx],
+      };
+      VK_ASSERT(vkWaitSemaphores(device_, &ringWait, UINT64_MAX));
+    }
+    VkFence acquireFence = VK_NULL_HANDLE;
+    if (!ctx_.has_KHR_swapchain_maintenance1_) {
+      // without VK_KHR_swapchain_maintenance1: ring acquire-fences synchronize semaphore reuse
+      VK_ASSERT(vkWaitForFences(device_, 1, &acquireFence_[ringIdx], VK_TRUE, UINT64_MAX));
+      VK_ASSERT(vkResetFences(device_, 1, &acquireFence_[ringIdx]));
+      acquireFence = acquireFence_[ringIdx];
+    }
     const clk::time_point t1 = clk::now();
 
-    VkFence acquireFence = VK_NULL_HANDLE;
-
-    if (ctx_.has_KHR_swapchain_maintenance1_) {
-      // VK_KHR_swapchain_maintenance1: before acquiring again, wait for the presentation operation to finish
-      if (presentFence_[currentImageIndex_]) {
-        VK_ASSERT(vkWaitForFences(device_, 1, &presentFence_[currentImageIndex_], VK_TRUE, UINT64_MAX));
-        VK_ASSERT(vkResetFences(device_, 1, &presentFence_[currentImageIndex_]));
-        // present done; drop the reuse guard (its fence was just reset)
-        ctx_.immediate_->setLastPresentSemaphore(VK_NULL_HANDLE, VK_NULL_HANDLE);
+    // The NEWEST present must complete before we go on (its fence: the image
+    // presented last frame, still currentImageIndex_ until the acquire below).
+    // This keeps the invariant the command-buffer reuse guard depends on: at
+    // most ONE present is ever pending past an acquire, and its wait semaphore
+    // is the guarded one — otherwise a busy frame cycles all 64 command
+    // buffers and re-signals a semaphore an unfinished present still waits on
+    // (VUID-vkQueueSubmit2-semaphore-03868). It also advances the
+    // completed-present watermark deferred destruction waits on (see
+    // VulkanContext::processDeferredTasks): presents complete in order, so
+    // "the newest present completed" covers every older one.
+    if (ctx_.has_KHR_swapchain_maintenance1_ && presentFence_[currentImageIndex_]) {
+      VK_ASSERT(vkWaitForFences(device_, 1, &presentFence_[currentImageIndex_], VK_TRUE, UINT64_MAX));
+      VK_ASSERT(vkResetFences(device_, 1, &presentFence_[currentImageIndex_]));
+      // present done; drop the reuse guard (its fence was just reset)
+      ctx_.immediate_->setLastPresentSemaphore(VK_NULL_HANDLE, VK_NULL_HANDLE);
+      if (presentId_[currentImageIndex_] > ctx_.presentsCompleted_) {
+        ctx_.presentsCompleted_ = presentId_[currentImageIndex_];
       }
-    } else {
-      // without VK_KHR_swapchain_maintenance1: use acquire fences to synchronize semaphore reuse
-      VK_ASSERT(vkWaitForFences(device_, 1, &acquireFence_[currentImageIndex_], VK_TRUE, UINT64_MAX));
-      VK_ASSERT(vkResetFences(device_, 1, &acquireFence_[currentImageIndex_]));
-
-      acquireFence = acquireFence_[currentImageIndex_];
     }
-
     const clk::time_point t2 = clk::now();
-    VkSemaphore acquireSemaphore = acquireSemaphore_[currentImageIndex_];
+
+    VkSemaphore acquireSemaphore = acquireSemaphore_[ringIdx];
     // when timeout is set to UINT64_MAX, we wait until the next image has been acquired
     VkResult r = vkAcquireNextImageKHR(device_, swapchain_, UINT64_MAX, acquireSemaphore, acquireFence, &currentImageIndex_);
     if (r != VK_SUCCESS && r != VK_SUBOPTIMAL_KHR && r != VK_ERROR_OUT_OF_DATE_KHR) {
       VK_ASSERT(r);
     }
     const clk::time_point t3 = clk::now();
-    lastAcquireWaitMs_[0] = ms(t0, t1);
-    lastAcquireWaitMs_[1] = ms(t1, t2);
-    lastAcquireWaitMs_[2] = ms(t2, t3);
+
+    // Pacing / image reuse, keyed on the image the acquire actually returned:
+    // the submit that last presented THIS image must retire before the CPU
+    // records another frame onto it — numSwapchainImages frames back, so
+    // normally a short wait. (The per-image-slot semaphore scheme had to make
+    // this wait on the PREVIOUS frame's submit, before the acquire — a full
+    // GPU-tail stall in front of every acquire; the ring is what lets it wait
+    // on the older value instead.) Without maintenance1 this is also the
+    // completed-present proof: that submit's acquire-semaphore wait executing
+    // means the image had been released, i.e. its PREVIOUS present completed.
+    const VkSemaphoreWaitInfo paceWait = {
+        .sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO,
+        .semaphoreCount = 1,
+        .pSemaphores = &ctx_.timelineSemaphore_,
+        .pValues = &timelineWaitValues_[currentImageIndex_],
+    };
+    VK_ASSERT(vkWaitSemaphores(device_, &paceWait, UINT64_MAX));
+    if (!ctx_.has_KHR_swapchain_maintenance1_ && presentIdPrev_[currentImageIndex_] > ctx_.presentsCompleted_) {
+      ctx_.presentsCompleted_ = presentIdPrev_[currentImageIndex_];
+    }
+
+    const clk::time_point t4 = clk::now();
+    lastAcquireWaitMs_[0] = ms(t0, t1) + ms(t3, t4); // semaphore-reuse guards + pacing
+    lastAcquireWaitMs_[1] = ms(t1, t2);              // present fence
+    lastAcquireWaitMs_[2] = ms(t2, t3);              // the presentation engine itself
     getNextImage_ = false;
+    pendingAcquireRingIdx_ = ringIdx;
     // The acquire semaphore says "this IMAGE is free to write". It therefore
     // belongs to the submit that uses the image — the presenting one — not to
     // whichever submit happens to come next. Parking it in the immediate
@@ -1573,6 +1625,11 @@ lvk::Result lvk::VulkanSwapchain::present(VkSemaphore waitSemaphore) {
 
   // let acquire() gate reuse of this command buffer's slot until the present has consumed its wait semaphore
   ctx_.immediate_->setLastPresentSemaphore(waitSemaphore, presentFence_[currentImageIndex_]);
+
+  // this present is now in flight — deferred destruction queued from here on
+  // holds until its completion is observed (see getCurrentTexture())
+  presentIdPrev_[currentImageIndex_] = presentId_[currentImageIndex_];
+  presentId_[currentImageIndex_] = ++ctx_.presentsQueued_;
 
   // drop the previous present mode so we don't set it again in the next `present()` call if the present mode is not switched at runtime
   presentFenceInfo_.pNext = nullptr;
@@ -4775,13 +4832,15 @@ lvk::SubmitHandle lvk::VulkanContext::submit(lvk::ICommandBuffer& commandBuffer,
   const bool shouldPresent = hasSwapchain() && present;
 
   if (shouldPresent) {
+    // if we a presenting a swapchain image, signal our timeline semaphore
+    const uint64_t signalValue = swapchain_->currentFrameIndex_ + swapchain_->getNumSwapchainImages();
     // This is the submit that uses the acquired image, so this is the submit
     // that must wait for the acquire (see VulkanSwapchain::getCurrentTexture).
     if (VkSemaphore acquired = swapchain_->takePendingAcquireSemaphore()) {
       immediate_->waitSemaphore(acquired);
+      // the acquire-semaphore ring entry is reusable once this submit retires
+      swapchain_->onAcquireSemaphoreConsumed(signalValue);
     }
-    // if we a presenting a swapchain image, signal our timeline semaphore
-    const uint64_t signalValue = swapchain_->currentFrameIndex_ + swapchain_->getNumSwapchainImages();
     // we wait for this value next time we want to acquire this swapchain image
     swapchain_->timelineWaitValues_[swapchain_->currentImageIndex_] = signalValue;
     immediate_->signalSemaphore(timelineSemaphore_, signalValue);
@@ -9046,7 +9105,7 @@ void lvk::VulkanContext::deferredTask(std::packaged_task<void()>&& task, SubmitH
   if (handle.empty()) {
     handle = immediate_->getNextSubmitHandle();
   }
-  pimpl_->deferredTasks_.emplace_back(std::move(task), handle, immediate_->getSubmitCounter());
+  pimpl_->deferredTasks_.emplace_back(std::move(task), handle, immediate_->getSubmitCounter(), presentsQueued_);
 }
 
 void* lvk::VulkanContext::getVmaAllocator() const {
@@ -9065,9 +9124,16 @@ void lvk::VulkanContext::processDeferredTasks() const {
   // use-after-free the driver acts on later, on a thread of its own. Holding
   // each task until the submits made after it have also retired costs a frame
   // or two of garbage and closes the whole class.
+  // ...and command-buffer retirement still is not the whole story: the driver
+  // processes a PRESENT on a worker thread of its own, and a vkDestroy racing
+  // that thread crashes inside it (nvoglv64 null-deref — the mode-switch
+  // crash). An early acquire never hit this because the app sat blocked in the
+  // acquire waits, issuing nothing, whenever a present was in flight; with the
+  // late acquire the whole next frame's CPU work overlaps the present. So each
+  // task also holds until every present queued before it has completed.
   const uint32_t retired = immediate_->getRetiredSubmitId();
   while (it != pimpl_->deferredTasks_.end() && immediate_->isReady(it->handle_, true) &&
-         retired > it->queuedSubmitId_) {
+         retired > it->queuedSubmitId_ && it->presentId_ <= presentsCompleted_) {
     (it++)->task_();
   }
 

@@ -170,7 +170,20 @@ class VulkanSwapchain final {
       .pFences = nullptr, // we set `pFences` in present() to the current image's present fence
   };
   TextureHandle swapchainTextures_[LVK_MAX_SWAPCHAIN_IMAGES] = {};
-  VkSemaphore acquireSemaphore_[LVK_MAX_SWAPCHAIN_IMAGES] = {};
+  // Acquire semaphores form a RING indexed by frame, NOT by image slot.
+  // Tying them to the image slot forced every acquire to first wait for the
+  // PREVIOUS frame's presenting submit to retire (the only proof that slot's
+  // semaphore was reusable) — a full GPU-tail stall on the CPU, in front of
+  // the acquire. A ring twice as deep as any possible swapchain means the
+  // submit that consumed a ring entry retired many frames ago, so the reuse
+  // wait is normally instant (see acquireSemConsumedValue_).
+  enum { kAcquireRing = 2 * LVK_MAX_SWAPCHAIN_IMAGES };
+  VkSemaphore acquireSemaphore_[kAcquireRing] = {};
+  // VulkanContext::timelineSemaphore_ value signaled by the submit that
+  // consumed ring entry i (0 = never consumed): the entry is reusable once
+  // the timeline passed this value.
+  uint64_t acquireSemConsumedValue_[kAcquireRing] = {};
+  uint32_t pendingAcquireRingIdx_ = 0;
   // The current image's acquire semaphore, waiting for the submit that
   // PRESENTS it (see getCurrentTexture / VulkanContext::submit). It is not
   // handed to the immediate commands at acquire time, because that slot is
@@ -182,8 +195,15 @@ class VulkanSwapchain final {
     pendingAcquireSemaphore_ = VK_NULL_HANDLE;
     return s;
   }
+  // the presenting submit consumed the pending acquire semaphore and will
+  // signal the context timeline with this value (VulkanContext::submit)
+  void onAcquireSemaphoreConsumed(uint64_t timelineValue) {
+    acquireSemConsumedValue_[pendingAcquireRingIdx_] = timelineValue;
+  }
   VkFence presentFence_[LVK_MAX_SWAPCHAIN_IMAGES] = {};
-  VkFence acquireFence_[LVK_MAX_SWAPCHAIN_IMAGES] = {}; // remove once VK_EXT_swapchain_maintenance1 becomes mandatory
+  VkFence acquireFence_[kAcquireRing] = {}; // remove once VK_EXT_swapchain_maintenance1 becomes mandatory
+  uint64_t presentId_[LVK_MAX_SWAPCHAIN_IMAGES] = {}; // VulkanContext::presentsQueued_ when this image was last presented
+  uint64_t presentIdPrev_[LVK_MAX_SWAPCHAIN_IMAGES] = {}; // ...and the present before that (the non-maintenance1 watermark)
   uint64_t timelineWaitValues_[LVK_MAX_SWAPCHAIN_IMAGES] = {};
   // getCurrentTexture() blocks in up to three places; a caller measuring frame
   // pacing needs to know WHICH, because they mean different things: [0] the
@@ -866,6 +886,14 @@ class VulkanContext final : public IContext {
  public:
   DeviceQueues deviceQueues_;
   std::unique_ptr<lvk::VulkanSwapchain> swapchain_;
+  // Present-in-flight watermarks, in VulkanContext so they survive swapchain
+  // recreation. queued: bumped by VulkanSwapchain::present(); completed:
+  // advanced when a present's completion is observed (its fence at the next
+  // acquire). Deferred destruction waits on these — the driver processes a
+  // present on its own worker thread, and destroying objects while one is in
+  // flight races that thread (see processDeferredTasks()).
+  uint64_t presentsQueued_ = 0;
+  uint64_t presentsCompleted_ = 0;
   VkSemaphore timelineSemaphore_ = VK_NULL_HANDLE;
   std::unique_ptr<lvk::VulkanImmediateCommands> immediate_;
   std::unique_ptr<lvk::VulkanImmediateCommands> immediateCompute_; // dedicated async-compute queue (optional)
