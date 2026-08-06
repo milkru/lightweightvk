@@ -1507,7 +1507,15 @@ lvk::TextureHandle lvk::VulkanSwapchain::getCurrentTexture() {
     lastAcquireWaitMs_[1] = ms(t1, t2);
     lastAcquireWaitMs_[2] = ms(t2, t3);
     getNextImage_ = false;
-    ctx_.immediate_->waitSemaphore(acquireSemaphore);
+    // The acquire semaphore says "this IMAGE is free to write". It therefore
+    // belongs to the submit that uses the image — the presenting one — not to
+    // whichever submit happens to come next. Parking it in the immediate
+    // commands' single pending-wait slot made it first-come-first-served: with
+    // the image acquired at frame start the frame's own submit was almost
+    // always next, but an application that acquires LATE gives any staging
+    // upload in between the chance to consume it, and the present then never
+    // waits for the image at all. VulkanContext::submit() takes it below.
+    pendingAcquireSemaphore_ = acquireSemaphore;
   }
 
   if (LVK_VERIFY(currentImageIndex_ < numSwapchainImages_)) {
@@ -4767,6 +4775,11 @@ lvk::SubmitHandle lvk::VulkanContext::submit(lvk::ICommandBuffer& commandBuffer,
   const bool shouldPresent = hasSwapchain() && present;
 
   if (shouldPresent) {
+    // This is the submit that uses the acquired image, so this is the submit
+    // that must wait for the acquire (see VulkanSwapchain::getCurrentTexture).
+    if (VkSemaphore acquired = swapchain_->takePendingAcquireSemaphore()) {
+      immediate_->waitSemaphore(acquired);
+    }
     // if we a presenting a swapchain image, signal our timeline semaphore
     const uint64_t signalValue = swapchain_->currentFrameIndex_ + swapchain_->getNumSwapchainImages();
     // we wait for this value next time we want to acquire this swapchain image

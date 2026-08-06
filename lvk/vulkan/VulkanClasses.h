@@ -171,6 +171,17 @@ class VulkanSwapchain final {
   };
   TextureHandle swapchainTextures_[LVK_MAX_SWAPCHAIN_IMAGES] = {};
   VkSemaphore acquireSemaphore_[LVK_MAX_SWAPCHAIN_IMAGES] = {};
+  // The current image's acquire semaphore, waiting for the submit that
+  // PRESENTS it (see getCurrentTexture / VulkanContext::submit). It is not
+  // handed to the immediate commands at acquire time, because that slot is
+  // consumed by whichever submit comes next — a staging upload, say — and the
+  // present would then never wait for the image to be free.
+  VkSemaphore pendingAcquireSemaphore_ = VK_NULL_HANDLE;
+  VkSemaphore takePendingAcquireSemaphore() {
+    VkSemaphore s = pendingAcquireSemaphore_;
+    pendingAcquireSemaphore_ = VK_NULL_HANDLE;
+    return s;
+  }
   VkFence presentFence_[LVK_MAX_SWAPCHAIN_IMAGES] = {};
   VkFence acquireFence_[LVK_MAX_SWAPCHAIN_IMAGES] = {}; // remove once VK_EXT_swapchain_maintenance1 becomes mandatory
   uint64_t timelineWaitValues_[LVK_MAX_SWAPCHAIN_IMAGES] = {};
