@@ -218,6 +218,9 @@ class VulkanImmediateCommands final {
   VkFence getVkFence(SubmitHandle handle) const;
   SubmitHandle getLastSubmitHandle() const;
   SubmitHandle getNextSubmitHandle() const;
+  // submitId of the newest command buffer known to have completed
+  uint32_t getRetiredSubmitId() const { return retiredSubmitId_; }
+  uint32_t getSubmitCounter() const { return submitCounter_; }
   bool isReady(SubmitHandle handle, bool fastCheckNoVulkan = false) const;
   void wait(SubmitHandle handle);
   void waitAll();
@@ -248,6 +251,7 @@ class VulkanImmediateCommands final {
   VkSemaphore submitTimelineSemaphore_ = VK_NULL_HANDLE; // monotonic timeline signaled by every submit() (cross-queue waits)
   uint32_t numAvailableCommandBuffers_ = kMaxCommandBuffers;
   uint32_t submitCounter_ = 1;
+  uint32_t retiredSubmitId_ = 0;
 };
 
 struct RenderPipelineState final {

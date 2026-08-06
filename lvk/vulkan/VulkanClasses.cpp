@@ -803,9 +803,15 @@ VkSurfaceFormatKHR chooseSwapSurfaceFormat(const std::vector<VkSurfaceFormatKHR>
 namespace lvk {
 
 struct DeferredTask {
-  DeferredTask(std::packaged_task<void()>&& task, SubmitHandle handle) : task_(std::move(task)), handle_(handle) {}
+  DeferredTask(std::packaged_task<void()>&& task, SubmitHandle handle, uint32_t submitId)
+  : task_(std::move(task)), handle_(handle), queuedSubmitId_(submitId) {}
   std::packaged_task<void()> task_;
   SubmitHandle handle_;
+  // The submit counter when this was queued. The handle alone is not enough:
+  // it names the command buffer being RECORDED at destroy time, and a LATER
+  // frame may bind the same object before that one retires. Waiting for the
+  // submits queued after this task as well is what makes the free safe.
+  uint32_t queuedSubmitId_ = 0;
 };
 
 struct VulkanContextImpl final {
@@ -1656,6 +1662,12 @@ void lvk::VulkanImmediateCommands::purge() {
       VK_ASSERT(vkResetFences(device_, 1, &buf.fence_));
       buf.cmdBuf_ = VK_NULL_HANDLE;
       numAvailableCommandBuffers_++;
+      // newest submit known to have RETIRED — deferred destruction waits for
+      // this to pass the submit the object was destroyed on (see
+      // processDeferredTasks)
+      if (buf.handle_.submitId_ > retiredSubmitId_) {
+        retiredSubmitId_ = buf.handle_.submitId_;
+      }
     } else {
       if (result != VK_TIMEOUT) {
         VK_ASSERT(result);
@@ -9021,7 +9033,7 @@ void lvk::VulkanContext::deferredTask(std::packaged_task<void()>&& task, SubmitH
   if (handle.empty()) {
     handle = immediate_->getNextSubmitHandle();
   }
-  pimpl_->deferredTasks_.emplace_back(std::move(task), handle);
+  pimpl_->deferredTasks_.emplace_back(std::move(task), handle, immediate_->getSubmitCounter());
 }
 
 void* lvk::VulkanContext::getVmaAllocator() const {
@@ -9031,7 +9043,18 @@ void* lvk::VulkanContext::getVmaAllocator() const {
 void lvk::VulkanContext::processDeferredTasks() const {
   std::vector<DeferredTask>::iterator it = pimpl_->deferredTasks_.begin();
 
-  while (it != pimpl_->deferredTasks_.end() && immediate_->isReady(it->handle_, true)) {
+  // A destroyed object is only unreachable once every command buffer that
+  // could still name it has retired — which is NOT just the one being recorded
+  // when it was destroyed. This runs immediately after a submit, so the frame
+  // that just went to the queue is pending and may well have bound the object
+  // (the validation layer says so: "vkDestroyPipeline can't be called on
+  // [im2d] that is currently in use by VkCommandBuffer"). Freeing it there is a
+  // use-after-free the driver acts on later, on a thread of its own. Holding
+  // each task until the submits made after it have also retired costs a frame
+  // or two of garbage and closes the whole class.
+  const uint32_t retired = immediate_->getRetiredSubmitId();
+  while (it != pimpl_->deferredTasks_.end() && immediate_->isReady(it->handle_, true) &&
+         retired > it->queuedSubmitId_) {
     (it++)->task_();
   }
 
