@@ -675,6 +675,8 @@ class VulkanContext final : public IContext {
   Holder<QueryPoolHandle> createQueryPool(uint32_t numQueries, const char* debugName, Result* outResult) override;
 
   Holder<AccelStructHandle> createAccelerationStructure(const AccelStructDesc& desc, Result* outResult) override;
+  Holder<AccelStructHandle> createAccelerationStructureNoBuild(const AccelStructDesc& desc, Result* outResult) override;
+  void releaseAccelStructScratch(AccelStructHandle handle) override;
 
   void destroy(ComputePipelineHandle handle) override;
   void destroy(RenderPipelineHandle handle) override;
@@ -742,7 +744,7 @@ class VulkanContext final : public IContext {
                               lvk::Result* outResult,
                               lvk::Format yuvFormat = Format_Invalid,
                               const char* debugName = nullptr);
-  AccelStructHandle createBLAS(const AccelStructDesc& desc, Result* outResult);
+  AccelStructHandle createBLAS(const AccelStructDesc& desc, Result* outResult, bool build = true);
   AccelStructHandle createTLAS(const AccelStructDesc& desc, Result* outResult);
 
   bool hasSwapchain() const noexcept {

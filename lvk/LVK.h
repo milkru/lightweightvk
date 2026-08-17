@@ -1180,6 +1180,14 @@ class IContext {
                                                                 Result* outResult = nullptr) = 0;
 
   [[nodiscard]] virtual Holder<AccelStructHandle> createAccelerationStructure(const AccelStructDesc& desc, Result* outResult = nullptr) = 0;
+  // Create the structure and its storage but record NO build: the caller
+  // builds them itself with cmdBuildBLAS/cmdBuildBLASBatch. Bulk creation
+  // (one BLAS per static mesh at load) is otherwise one submit+wait each.
+  // The build uses the structure's own retained scratch buffer, which
+  // releaseAccelStructScratch() drops once the build has completed.
+  [[nodiscard]] virtual Holder<AccelStructHandle> createAccelerationStructureNoBuild(const AccelStructDesc& desc,
+                                                                                     Result* outResult = nullptr) = 0;
+  virtual void releaseAccelStructScratch(AccelStructHandle handle) = 0;
 
   virtual void destroy(ComputePipelineHandle handle) = 0;
   virtual void destroy(RenderPipelineHandle handle) = 0;

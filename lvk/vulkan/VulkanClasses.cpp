@@ -5071,6 +5071,44 @@ lvk::Holder<lvk::AccelStructHandle> lvk::VulkanContext::createAccelerationStruct
   return {this, handle};
 }
 
+lvk::Holder<lvk::AccelStructHandle> lvk::VulkanContext::createAccelerationStructureNoBuild(const AccelStructDesc& desc,
+                                                                                          Result* outResult) {
+  LVK_PROFILER_FUNCTION();
+
+  if (!LVK_VERIFY(has_KHR_acceleration_structure_)) {
+    Result::setResult(outResult, Result(Result::Code::RuntimeError, "VK_KHR_acceleration_structure is not enabled"));
+    return {};
+  }
+  if (!LVK_VERIFY(desc.type == AccelStructType_BLAS)) {
+    Result::setResult(outResult, Result(Result::Code::ArgumentOutOfRange, "Deferred builds are BLAS only"));
+    return {};
+  }
+
+  Result result;
+  AccelStructHandle handle = createBLAS(desc, &result, false);
+
+  if (!LVK_VERIFY(result.isOk() && handle.valid())) {
+    Result::setResult(outResult, Result(Result::Code::RuntimeError, "Cannot create AccelerationStructure"));
+    return {};
+  }
+
+  Result::setResult(outResult, result);
+
+  awaitingCreation_ = true;
+
+  return {this, handle};
+}
+
+void lvk::VulkanContext::releaseAccelStructScratch(AccelStructHandle handle) {
+  if (handle.empty()) {
+    return;
+  }
+  lvk::AccelerationStructure* as = accelStructuresPool_.get(handle);
+  if (as) {
+    as->scratchBuffer.reset();
+  }
+}
+
 lvk::Holder<lvk::SamplerHandle> lvk::VulkanContext::createSampler(const SamplerStateDesc& desc, Result* outResult) {
   LVK_PROFILER_FUNCTION();
 
@@ -5546,7 +5584,7 @@ lvk::Holder<lvk::TextureHandle> lvk::VulkanContext::createTextureView(lvk::Textu
   return {this, handle};
 }
 
-lvk::AccelStructHandle lvk::VulkanContext::createBLAS(const AccelStructDesc& desc, Result* outResult) {
+lvk::AccelStructHandle lvk::VulkanContext::createBLAS(const AccelStructDesc& desc, Result* outResult, bool build) {
   VkAccelerationStructureGeometryKHR accelerationStructureGeometry{};
   VkAccelerationStructureBuildSizesInfoKHR accelerationStructureBuildSizesInfo{};
   getBuildInfoBLAS(desc, accelerationStructureGeometry, accelerationStructureBuildSizesInfo);
@@ -5580,6 +5618,18 @@ lvk::AccelStructHandle lvk::VulkanContext::createBLAS(const AccelStructDesc& des
       .type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR,
   };
   VK_ASSERT(vkCreateAccelerationStructureKHR(vkDevice_, &ciAccelerationStructure, nullptr, &accelStruct.vkHandle));
+
+  if (!build) {
+    // the caller records the build itself (cmdBuildBLAS/cmdBuildBLASBatch),
+    // which allocates the scratch buffer it needs; the device address is
+    // valid from creation, so nothing else here has to wait for the build
+    const VkAccelerationStructureDeviceAddressInfoKHR addressInfo{
+        .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_DEVICE_ADDRESS_INFO_KHR,
+        .accelerationStructure = accelStruct.vkHandle,
+    };
+    accelStruct.deviceAddress = vkGetAccelerationStructureDeviceAddressKHR(vkDevice_, &addressInfo);
+    return accelStructuresPool_.create(std::move(accelStruct));
+  }
 
   lvk::Holder<lvk::BufferHandle> scratchBuffer = createBuffer(
       {
