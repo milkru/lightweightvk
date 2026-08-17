@@ -966,6 +966,16 @@ struct AccelStructInstance {
   uint64_t accelerationStructureReference = 0;
 };
 
+// What compactBLASBatch() actually observed, so a caller can tell a failed
+// size query apart from a driver that simply had nothing to give back.
+struct AccelStructCompactStats {
+  uint64_t queriedBytes = 0; // sum of the compacted sizes the driver reported
+  uint64_t originalBytes = 0; // sum of the sizes those structures were built at
+  uint32_t numStructures = 0; // structures the query covered
+  uint32_t numCompacted = 0; // ... of those, the ones actually replaced
+  int32_t queryStatus = 0; // VkResult of vkGetQueryPoolResults()
+};
+
 struct AccelStructDesc {
   AccelStructType type = AccelStructType_Invalid;
   AccelStructGeomType geometryType = AccelStructGeomType_Triangles;
@@ -1188,6 +1198,15 @@ class IContext {
   [[nodiscard]] virtual Holder<AccelStructHandle> createAccelerationStructureNoBuild(const AccelStructDesc& desc,
                                                                                      Result* outResult = nullptr) = 0;
   virtual void releaseAccelStructScratch(AccelStructHandle handle) = 0;
+  // Compact a batch of already-built BLAS in place. Each structure's compacted
+  // size is queried, a tight copy is made and swapped into the same pool slot,
+  // and the original is released - so the handles stay valid but their DEVICE
+  // ADDRESSES change, and anything caching gpuAddress() must re-read it. The
+  // structures must have been built with AccelStructBuildFlagBits_AllowCompaction.
+  // Submits and waits internally: no frame command buffer may be open. Returns
+  // the number of bytes released; `outStats` reports what the driver actually
+  // said, which is what separates "query failed" from "no gain available".
+  virtual uint64_t compactBLASBatch(const AccelStructHandle* handles, uint32_t count, AccelStructCompactStats* outStats = nullptr) = 0;
 
   virtual void destroy(ComputePipelineHandle handle) = 0;
   virtual void destroy(RenderPipelineHandle handle) = 0;

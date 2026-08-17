@@ -677,6 +677,7 @@ class VulkanContext final : public IContext {
   Holder<AccelStructHandle> createAccelerationStructure(const AccelStructDesc& desc, Result* outResult) override;
   Holder<AccelStructHandle> createAccelerationStructureNoBuild(const AccelStructDesc& desc, Result* outResult) override;
   void releaseAccelStructScratch(AccelStructHandle handle) override;
+  uint64_t compactBLASBatch(const AccelStructHandle* handles, uint32_t count, AccelStructCompactStats* outStats) override;
 
   void destroy(ComputePipelineHandle handle) override;
   void destroy(RenderPipelineHandle handle) override;

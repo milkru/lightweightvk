@@ -5109,6 +5109,166 @@ void lvk::VulkanContext::releaseAccelStructScratch(AccelStructHandle handle) {
   }
 }
 
+uint64_t lvk::VulkanContext::compactBLASBatch(const AccelStructHandle* handles, uint32_t count, AccelStructCompactStats* outStats) {
+  LVK_PROFILER_FUNCTION();
+
+  AccelStructCompactStats stats;
+  SCOPE_EXIT {
+    if (outStats) {
+      *outStats = stats;
+    }
+  };
+  if (!handles || !count || !LVK_VERIFY(has_KHR_acceleration_structure_)) {
+    return 0;
+  }
+
+  // gather the live structures; a build must have completed on each
+  std::vector<VkAccelerationStructureKHR> vkAS;
+  std::vector<uint32_t> slot;
+  vkAS.reserve(count);
+  slot.reserve(count);
+  for (uint32_t i = 0; i != count; i++) {
+    if (handles[i].empty()) {
+      continue;
+    }
+    lvk::AccelerationStructure* as = accelStructuresPool_.get(handles[i]);
+    if (!as || as->isTLAS || !as->vkHandle) {
+      continue;
+    }
+    vkAS.push_back(as->vkHandle);
+    slot.push_back(i);
+  }
+  if (vkAS.empty()) {
+    return 0;
+  }
+
+  const VkQueryPoolCreateInfo ciQueryPool = {
+      .sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO,
+      .queryType = VK_QUERY_TYPE_ACCELERATION_STRUCTURE_COMPACTED_SIZE_KHR,
+      .queryCount = (uint32_t)vkAS.size(),
+  };
+  VkQueryPool queryPool = VK_NULL_HANDLE;
+  VK_ASSERT(vkCreateQueryPool(vkDevice_, &ciQueryPool, nullptr, &queryPool));
+  if (!queryPool) {
+    return 0;
+  }
+  SCOPE_EXIT {
+    vkDestroyQueryPool(vkDevice_, queryPool, nullptr);
+  };
+
+  {
+    lvk::ICommandBuffer& buf = acquireCommandBuffer();
+    const VkCommandBuffer cmdBuf = ((lvk::CommandBuffer&)buf).getVkCommandBuffer();
+    vkCmdResetQueryPool(cmdBuf, queryPool, 0, (uint32_t)vkAS.size());
+    // the builds completed in an earlier submit, but the property write still
+    // needs the acceleration-structure writes made available to it
+    const VkMemoryBarrier2 barrier = {
+        .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+        .srcStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
+        .srcAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR,
+        .dstStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
+        .dstAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR,
+    };
+    const VkDependencyInfo dep = {
+        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &barrier};
+    vkCmdPipelineBarrier2(cmdBuf, &dep);
+    vkCmdWriteAccelerationStructuresPropertiesKHR(cmdBuf,
+                                                  (uint32_t)vkAS.size(),
+                                                  vkAS.data(),
+                                                  VK_QUERY_TYPE_ACCELERATION_STRUCTURE_COMPACTED_SIZE_KHR,
+                                                  queryPool,
+                                                  0);
+    wait(submit(buf, {}));
+  }
+
+  stats.numStructures = (uint32_t)vkAS.size();
+
+  std::vector<VkDeviceSize> compactedSize(vkAS.size(), 0);
+  // no WAIT bit: the submit above is already retired, and a pool whose queries
+  // were somehow never written would block forever instead of reporting it
+  stats.queryStatus = (int32_t)vkGetQueryPoolResults(vkDevice_,
+                                                     queryPool,
+                                                     0,
+                                                     (uint32_t)vkAS.size(),
+                                                     compactedSize.size() * sizeof(VkDeviceSize),
+                                                     compactedSize.data(),
+                                                     sizeof(VkDeviceSize),
+                                                     VK_QUERY_RESULT_64_BIT);
+  if (stats.queryStatus != VK_SUCCESS) {
+    return 0;
+  }
+  for (VkDeviceSize s : compactedSize) {
+    stats.queriedBytes += s;
+  }
+
+  // allocate the tight copies, then record every copy into one command buffer
+  std::vector<lvk::Holder<lvk::BufferHandle>> newBuffer(vkAS.size());
+  std::vector<VkAccelerationStructureKHR> newAS(vkAS.size(), VK_NULL_HANDLE);
+  uint64_t saved = 0;
+  {
+    lvk::ICommandBuffer& buf = acquireCommandBuffer();
+    const VkCommandBuffer cmdBuf = ((lvk::CommandBuffer&)buf).getVkCommandBuffer();
+    for (size_t i = 0; i != vkAS.size(); i++) {
+      lvk::AccelerationStructure* as = accelStructuresPool_.get(handles[slot[i]]);
+      const uint64_t oldSize = getBufferSize(this, as->buffer);
+      stats.originalBytes += oldSize;
+      // a driver may report no gain; leave those structures alone
+      if (!compactedSize[i] || compactedSize[i] >= oldSize) {
+        continue;
+      }
+      newBuffer[i] = createBuffer({.usage = lvk::BufferUsageBits_AccelStructStorage,
+                                   .storage = lvk::StorageType_Device,
+                                   .size = compactedSize[i],
+                                   .debugName = "Buffer: BLAS (compacted)"},
+                                  nullptr,
+                                  nullptr);
+      if (!newBuffer[i].valid()) {
+        continue;
+      }
+      const VkAccelerationStructureCreateInfoKHR ci = {
+          .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR,
+          .buffer = getVkBuffer(this, newBuffer[i]),
+          .size = compactedSize[i],
+          .type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR,
+      };
+      VK_ASSERT(vkCreateAccelerationStructureKHR(vkDevice_, &ci, nullptr, &newAS[i]));
+      if (!newAS[i]) {
+        newBuffer[i].reset();
+        continue;
+      }
+      const VkCopyAccelerationStructureInfoKHR copy = {
+          .sType = VK_STRUCTURE_TYPE_COPY_ACCELERATION_STRUCTURE_INFO_KHR,
+          .src = as->vkHandle,
+          .dst = newAS[i],
+          .mode = VK_COPY_ACCELERATION_STRUCTURE_MODE_COMPACT_KHR,
+      };
+      vkCmdCopyAccelerationStructureKHR(cmdBuf, &copy);
+      saved += oldSize - compactedSize[i];
+      stats.numCompacted++;
+    }
+    wait(submit(buf, {}));
+  }
+
+  // the copies have completed - swap each tight structure into its pool slot
+  for (size_t i = 0; i != vkAS.size(); i++) {
+    if (!newAS[i]) {
+      continue;
+    }
+    lvk::AccelerationStructure* as = accelStructuresPool_.get(handles[slot[i]]);
+    deferredTask(std::packaged_task<void()>(
+        [device = vkDevice_, old = as->vkHandle]() { vkDestroyAccelerationStructureKHR(device, old, nullptr); }));
+    as->vkHandle = newAS[i];
+    as->buffer = std::move(newBuffer[i]); // releases the oversized one
+    const VkAccelerationStructureDeviceAddressInfoKHR addressInfo{
+        .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_DEVICE_ADDRESS_INFO_KHR,
+        .accelerationStructure = as->vkHandle,
+    };
+    as->deviceAddress = vkGetAccelerationStructureDeviceAddressKHR(vkDevice_, &addressInfo);
+  }
+
+  return saved;
+}
+
 lvk::Holder<lvk::SamplerHandle> lvk::VulkanContext::createSampler(const SamplerStateDesc& desc, Result* outResult) {
   LVK_PROFILER_FUNCTION();
 
@@ -7736,7 +7896,10 @@ void lvk::VulkanContext::getBuildInfoBLAS(const AccelStructDesc& desc,
   const VkAccelerationStructureBuildGeometryInfoKHR accelerationBuildGeometryInfo{
       .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR,
       .type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR,
-      .flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR,
+      // the size query must use the SAME flags the build will, or the structure
+      // comes out too small and the build overruns it - `ALLOW_COMPACTION` alone
+      // costs another 128 bytes on NVIDIA. The TLAS twin below already does this
+      .flags = buildFlagsToVkBuildAccelerationStructureFlags(desc.buildFlags),
       .geometryCount = 1,
       .pGeometries = &outGeometry,
   };
