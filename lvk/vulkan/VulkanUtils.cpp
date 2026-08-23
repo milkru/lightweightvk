@@ -320,6 +320,8 @@ lvk::Format lvk::vkFormatToFormat(VkFormat format) {
     return Format_R_F16;
   case VK_FORMAT_R16_UINT:
     return Format_R_UI16;
+  case VK_FORMAT_R32_UINT:
+    return Format_R_UI32;
   case VK_FORMAT_R8G8_UNORM:
     return Format_RG_UN8;
   case VK_FORMAT_B8G8R8A8_UNORM:
