@@ -5629,7 +5629,7 @@ lvk::Holder<lvk::TextureHandle> lvk::VulkanContext::createTexture(const TextureD
   awaitingCreation_ = true;
 
   if (desc.data) {
-    LVK_ASSERT(desc.type == TextureType_2D || desc.type == TextureType_Cube);
+    LVK_ASSERT(desc.type == TextureType_2D || desc.type == TextureType_3D || desc.type == TextureType_Cube);
     LVK_ASSERT(desc.dataNumMipLevels <= desc.numMipLevels);
     const uint32_t numLayers = desc.type == TextureType_Cube ? 6 : 1;
     Result res = upload(handle, {.dimensions = desc.dimensions, .numLayers = numLayers, .numMipLevels = desc.dataNumMipLevels}, desc.data);
