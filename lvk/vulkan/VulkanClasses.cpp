@@ -5825,6 +5825,8 @@ lvk::AccelStructHandle lvk::VulkanContext::createBLAS(const AccelStructDesc& des
       .accelerationStructure = accelStruct.vkHandle,
   };
   accelStruct.deviceAddress = vkGetAccelerationStructureDeviceAddressKHR(vkDevice_, &accelerationDeviceAddressInfo);
+  // keep the scratch: it is sized for the creation desc, so later rebuilds within it never reallocate
+  accelStruct.scratchBuffer = std::move(scratchBuffer);
 
   return accelStructuresPool_.create(std::move(accelStruct));
 }
