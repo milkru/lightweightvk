@@ -1300,6 +1300,9 @@ struct ContextConfig {
   bool terminateOnValidationError = false; // invoke std::terminate() on any validation error
   bool enableValidation = true;
   bool enableValidationGpuAV = true;
+  // synchronization validation: semaphore/fence misuse and hazards the core
+  // checks do not see (a binary semaphore waited twice, a never-signalled wait)
+  bool enableValidationSync = false;
   bool generateSPIRVDebugInfo = true;
   lvk::ColorSpace swapchainRequestedColorSpace = lvk::ColorSpace_SRGB_NONLINEAR;
   // owned by the application - should be alive until createVulkanContextWithSwapchain() returns

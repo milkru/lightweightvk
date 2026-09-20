@@ -7653,6 +7653,7 @@ lvk::Result lvk::VulkanContext::createInstance() {
 #endif // ANDROID
 
   const VkBool32 gpuav_enable = enableGpuAV ? VK_TRUE : VK_FALSE;
+  const VkBool32 syncval_enable = config_.enableValidation && config_.enableValidationSync ? VK_TRUE : VK_FALSE;
   const VkBool32 gpuav_post_process_descriptor_indexing = VK_FALSE; // https://github.com/KhronosGroup/Vulkan-ValidationLayers/issues/9222
 #define LAYER_SETTINGS_BOOL32(name, var)                                                                                        \
   VkLayerSettingEXT {                                                                                                           \
@@ -7662,6 +7663,8 @@ lvk::Result lvk::VulkanContext::createInstance() {
   const VkLayerSettingEXT settings[] = {
       LAYER_SETTINGS_BOOL32("gpuav_enable", &gpuav_enable),
       LAYER_SETTINGS_BOOL32("gpuav_post_process_descriptor_indexing", &gpuav_post_process_descriptor_indexing),
+      LAYER_SETTINGS_BOOL32("validate_sync", &syncval_enable),
+      LAYER_SETTINGS_BOOL32("syncval_submit_time_validation", &syncval_enable),
   };
 #undef LAYER_SETTINGS_BOOL32
   const VkLayerSettingsCreateInfoEXT layerSettingsCreateInfo = {
