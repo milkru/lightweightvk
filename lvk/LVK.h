@@ -1303,6 +1303,9 @@ struct ContextConfig {
   // synchronization validation: semaphore/fence misuse and hazards the core
   // checks do not see (a binary semaphore waited twice, a never-signalled wait)
   bool enableValidationSync = false;
+  // do not enable VK_KHR/EXT_swapchain_maintenance1 even when available: no present fences, no runtime
+  // present-mode switch; the swapchain falls back to acquire fences
+  bool disableSwapchainMaintenance1 = false;
   bool generateSPIRVDebugInfo = true;
   lvk::ColorSpace swapchainRequestedColorSpace = lvk::ColorSpace_SRGB_NONLINEAR;
   // owned by the application - should be alive until createVulkanContextWithSwapchain() returns
