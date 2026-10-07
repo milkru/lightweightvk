@@ -8301,11 +8301,6 @@ lvk::Result lvk::VulkanContext::initContext(const HWDeviceDesc& desc) {
       .shaderTileImageColorReadAccess = VK_TRUE,
       .shaderTileImageDepthReadAccess = VK_TRUE,
   };
-  VkPhysicalDeviceMeshShaderFeaturesEXT meshShaderFeatures = {
-      .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT,
-      .taskShader = VK_TRUE,
-      .meshShader = VK_TRUE,
-  };
   VkPhysicalDevicePresentModeFifoLatestReadyFeaturesKHR presentModeLatestReadyFeatures = {
       .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_MODE_FIFO_LATEST_READY_FEATURES_KHR,
       .presentModeFifoLatestReady = VK_TRUE,
@@ -8393,7 +8388,6 @@ lvk::Result lvk::VulkanContext::initContext(const HWDeviceDesc& desc) {
     addOptionalExtension(VK_EXT_DEVICE_FAULT_EXTENSION_NAME, has_EXT_device_fault_, &deviceFaultFeatures);
   }
   addOptionalExtension(VK_EXT_SHADER_TILE_IMAGE_EXTENSION_NAME, has_EXT_shader_tile_image, &shaderTileImageFeatures);
-  addOptionalExtension(VK_EXT_MESH_SHADER_EXTENSION_NAME, has_EXT_mesh_shader_, &meshShaderFeatures);
   addOptionalExtension(VK_KHR_SHARED_PRESENTABLE_IMAGE_EXTENSION_NAME, has_KHR_shared_presentable_image_);
   addOptionalExtension(
       VK_KHR_PRESENT_MODE_FIFO_LATEST_READY_EXTENSION_NAME, has_KHR_present_mode_fifo_latest_ready_, &presentModeLatestReadyFeatures);
