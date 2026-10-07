@@ -6792,7 +6792,10 @@ void lvk::VulkanContext::destroy(BufferHandle handle) {
     return;
   }
 
-  LLOGL("destroy: buffer %llu bytes (present %llu)\n", (unsigned long long)buf->bufferSize_, (unsigned long long)presentsQueued_);
+  LLOGL("destroy: buffer %llu bytes at 0x%llx (present %llu)\n",
+        (unsigned long long)buf->bufferSize_,
+        (unsigned long long)buf->vkDeviceAddress_,
+        (unsigned long long)presentsQueued_);
 
   if (LVK_VULKAN_USE_VMA) {
     if (buf->mappedPtr_) {
@@ -9038,6 +9041,11 @@ lvk::BufferHandle lvk::VulkanContext::createBuffer(VkDeviceSize bufferSize,
     };
     buf.vkDeviceAddress_ = vkGetBufferDeviceAddress(vkDevice_, &ai);
     LVK_ASSERT(buf.vkDeviceAddress_);
+    // a device-fault address resolves against these lines
+    LLOGL("buffer '%s': %llu bytes at 0x%llx\n",
+          debugName ? debugName : "",
+          (unsigned long long)bufferSize,
+          (unsigned long long)buf.vkDeviceAddress_);
   }
 
   return buffersPool_.create(std::move(buf));
