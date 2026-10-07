@@ -46,6 +46,7 @@
                     __LINE__,                                      \
                     #func,                                         \
                     lvk::getVulkanResultString(vk_assert_result)); \
+      lvk::onVkAssertFailed(vk_assert_result);                     \
       assert(false);                                               \
     }                                                              \
   }
@@ -59,6 +60,7 @@
                     __LINE__,                                      \
                     #func,                                         \
                     lvk::getVulkanResultString(vk_assert_result)); \
+      lvk::onVkAssertFailed(vk_assert_result);                     \
       assert(false);                                               \
       return getResultFromVkResult(vk_assert_result);              \
     }                                                              \
@@ -134,6 +136,13 @@ void setResultFrom(Result* outResult, VkResult result);
 Result getResultFromVkResult(VkResult result);
 const char* getVulkanResultString(VkResult result);
 const char* getVkDeviceFaultAddressTypeString(VkDeviceFaultAddressTypeEXT type);
+// prints the VK_EXT_device_fault report of `device` (description, faulting addresses, vendor info)
+void logDeviceFault(VkDevice device);
+// the device whose fault report VK_ASSERT() prints on VK_ERROR_DEVICE_LOST (VK_NULL_HANDLE = none)
+void setDeviceFaultDevice(VkDevice device);
+// called once after the fault report on the first VK_ERROR_DEVICE_LOST (application breadcrumbs)
+void setDeviceLostCallback(void (*callback)(void*), void* userData);
+void onVkAssertFailed(VkResult result);
 uint32_t getBytesPerPixel(VkFormat format);
 uint32_t getNumImagePlanes(VkFormat format);
 lvk::Format vkFormatToFormat(VkFormat format);

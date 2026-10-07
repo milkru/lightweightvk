@@ -931,6 +931,7 @@ class VulkanContext final : public IContext {
   bool has_EXT_swapchain_colorspace_ = false;
   bool has_KHR_swapchain_maintenance1_ = false; // VK_KHR_swapchain_maintenance1 or VK_EXT_swapchain_maintenance1
   bool has_EXT_hdr_metadata_ = false;
+  bool has_AMD_buffer_marker_ = false;
   bool has_EXT_device_fault_ = false;
   bool has_EXT_shader_tile_image = false;
   bool has_EXT_mesh_shader_ = false;

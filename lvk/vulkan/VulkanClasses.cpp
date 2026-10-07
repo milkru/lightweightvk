@@ -1643,6 +1643,106 @@ lvk::Result lvk::VulkanSwapchain::present(VkSemaphore waitSemaphore) {
   return Result();
 }
 
+void lvk::logDeviceFault(VkDevice device) {
+  VkDeviceFaultCountsEXT count = {
+      .sType = VK_STRUCTURE_TYPE_DEVICE_FAULT_COUNTS_EXT,
+  };
+  vkGetDeviceFaultInfoEXT(device, &count, nullptr);
+  std::vector<VkDeviceFaultAddressInfoEXT> addressInfo(count.addressInfoCount);
+  std::vector<VkDeviceFaultVendorInfoEXT> vendorInfo(count.vendorInfoCount);
+  std::vector<uint8_t> binary(count.vendorBinarySize);
+  VkDeviceFaultInfoEXT info = {
+      .sType = VK_STRUCTURE_TYPE_DEVICE_FAULT_INFO_EXT,
+      .pAddressInfos = addressInfo.data(),
+      .pVendorInfos = vendorInfo.data(),
+      .pVendorBinaryData = binary.data(),
+  };
+  vkGetDeviceFaultInfoEXT(device, &count, &info);
+  LLOGW("VK_ERROR_DEVICE_LOST: %s\n", info.description);
+  for (const VkDeviceFaultAddressInfoEXT& aInfo : addressInfo) {
+    VkDeviceSize lowerAddress = aInfo.reportedAddress & ~(aInfo.addressPrecision - 1);
+    VkDeviceSize upperAddress = aInfo.reportedAddress | (aInfo.addressPrecision - 1);
+    LLOGW("...address range [ %" PRIx64 ", %" PRIx64 " ]: %s\n",
+          lowerAddress,
+          upperAddress,
+          getVkDeviceFaultAddressTypeString(aInfo.addressType));
+  }
+  for (const VkDeviceFaultVendorInfoEXT& vInfo : vendorInfo) {
+    LLOGW("...caused by `%s` with error code %" PRIx64 " and data %" PRIx64 "\n",
+          vInfo.description,
+          vInfo.vendorFaultCode,
+          vInfo.vendorFaultData);
+  }
+  const VkDeviceSize binarySize = count.vendorBinarySize;
+  if (info.pVendorBinaryData && binarySize >= sizeof(VkDeviceFaultVendorBinaryHeaderVersionOneEXT)) {
+    const VkDeviceFaultVendorBinaryHeaderVersionOneEXT* header =
+        std::launder(reinterpret_cast<const VkDeviceFaultVendorBinaryHeaderVersionOneEXT*>(info.pVendorBinaryData));
+    const char hexDigits[] = "0123456789abcdef";
+    char uuid[VK_UUID_SIZE * 2 + 1] = {};
+    for (uint32_t i = 0; i < VK_UUID_SIZE; ++i) {
+      uuid[i * 2 + 0] = hexDigits[(header->pipelineCacheUUID[i] >> 4) & 0xF];
+      uuid[i * 2 + 1] = hexDigits[header->pipelineCacheUUID[i] & 0xF];
+    }
+    LLOGW("VkDeviceFaultVendorBinaryHeaderVersionOne:");
+    LLOGW("   headerSize        : %u\n", header->headerSize);
+    LLOGW("   headerVersion     : %u\n", (uint32_t)header->headerVersion);
+    LLOGW("   vendorID          : %u\n", header->vendorID);
+    LLOGW("   deviceID          : %u\n", header->deviceID);
+    LLOGW("   driverVersion     : %u\n", header->driverVersion);
+    LLOGW("   pipelineCacheUUID : %s\n", uuid);
+    if (header->applicationNameOffset && header->applicationNameOffset < binarySize) {
+      LLOGW("   applicationName   : %s\n", (const char*)info.pVendorBinaryData + header->applicationNameOffset);
+    }
+    LLOGW("   applicationVersion: %i.%i.%i\n",
+          VK_API_VERSION_MAJOR(header->applicationVersion),
+          VK_API_VERSION_MINOR(header->applicationVersion),
+          VK_API_VERSION_PATCH(header->applicationVersion));
+    if (header->engineNameOffset && header->engineNameOffset < binarySize) {
+      LLOGW("   engineName        : %s\n", (const char*)info.pVendorBinaryData + header->engineNameOffset);
+    }
+    LLOGW("   engineVersion     : %i.%i.%i\n",
+          VK_API_VERSION_MAJOR(header->engineVersion),
+          VK_API_VERSION_MINOR(header->engineVersion),
+          VK_API_VERSION_PATCH(header->engineVersion));
+    LLOGW("   apiVersion        : %i.%i.%i.%i\n",
+          VK_API_VERSION_MAJOR(header->apiVersion),
+          VK_API_VERSION_MINOR(header->apiVersion),
+          VK_API_VERSION_PATCH(header->apiVersion),
+          VK_API_VERSION_VARIANT(header->apiVersion));
+  }
+}
+
+// VK_ASSERT() prints the VK_EXT_device_fault report when a call fails with
+// VK_ERROR_DEVICE_LOST: the GPU fault surfaces at whatever call comes next, not
+// only at a submit. Once per fault; every later call fails the same way.
+static VkDevice sDeviceFaultDevice = VK_NULL_HANDLE;
+static void (*sDeviceLostCallback)(void*) = nullptr;
+static void* sDeviceLostUserData = nullptr;
+static bool sDeviceLostReported = false;
+
+void lvk::setDeviceFaultDevice(VkDevice device) {
+  sDeviceFaultDevice = device;
+  sDeviceLostReported = false;
+}
+
+void lvk::setDeviceLostCallback(void (*callback)(void*), void* userData) {
+  sDeviceLostCallback = callback;
+  sDeviceLostUserData = userData;
+}
+
+void lvk::onVkAssertFailed(VkResult result) {
+  if (result != VK_ERROR_DEVICE_LOST || sDeviceLostReported) {
+    return;
+  }
+  sDeviceLostReported = true;
+  if (sDeviceFaultDevice) {
+    lvk::logDeviceFault(sDeviceFaultDevice);
+  }
+  if (sDeviceLostCallback) {
+    sDeviceLostCallback(sDeviceLostUserData);
+  }
+}
+
 lvk::VulkanImmediateCommands::VulkanImmediateCommands(VkDevice device,
                                                       uint32_t queueFamilyIndex,
                                                       bool has_EXT_device_fault,
@@ -1921,73 +2021,8 @@ lvk::SubmitHandle lvk::VulkanImmediateCommands::submit(const CommandBufferWrappe
       .pSignalSemaphoreInfos = signalSemaphores,
   };
   const VkResult result = vkQueueSubmit2(queue_, 1u, &si, wrapper.fence_);
-  if (has_EXT_device_fault_ && result == VK_ERROR_DEVICE_LOST) {
-    VkDeviceFaultCountsEXT count = {
-        .sType = VK_STRUCTURE_TYPE_DEVICE_FAULT_COUNTS_EXT,
-    };
-    vkGetDeviceFaultInfoEXT(device_, &count, nullptr);
-    std::vector<VkDeviceFaultAddressInfoEXT> addressInfo(count.addressInfoCount);
-    std::vector<VkDeviceFaultVendorInfoEXT> vendorInfo(count.vendorInfoCount);
-    std::vector<uint8_t> binary(count.vendorBinarySize);
-    VkDeviceFaultInfoEXT info = {
-        .sType = VK_STRUCTURE_TYPE_DEVICE_FAULT_INFO_EXT,
-        .pAddressInfos = addressInfo.data(),
-        .pVendorInfos = vendorInfo.data(),
-        .pVendorBinaryData = binary.data(),
-    };
-    vkGetDeviceFaultInfoEXT(device_, &count, &info);
-    LLOGW("VK_ERROR_DEVICE_LOST: %s\n", info.description);
-    for (const VkDeviceFaultAddressInfoEXT& aInfo : addressInfo) {
-      VkDeviceSize lowerAddress = aInfo.reportedAddress & ~(aInfo.addressPrecision - 1);
-      VkDeviceSize upperAddress = aInfo.reportedAddress | (aInfo.addressPrecision - 1);
-      LLOGW("...address range [ %" PRIx64 ", %" PRIx64 " ]: %s\n",
-            lowerAddress,
-            upperAddress,
-            getVkDeviceFaultAddressTypeString(aInfo.addressType));
-    }
-    for (const VkDeviceFaultVendorInfoEXT& vInfo : vendorInfo) {
-      LLOGW("...caused by `%s` with error code %" PRIx64 " and data %" PRIx64 "\n",
-            vInfo.description,
-            vInfo.vendorFaultCode,
-            vInfo.vendorFaultData);
-    }
-    const VkDeviceSize binarySize = count.vendorBinarySize;
-    if (info.pVendorBinaryData && binarySize >= sizeof(VkDeviceFaultVendorBinaryHeaderVersionOneEXT)) {
-      const VkDeviceFaultVendorBinaryHeaderVersionOneEXT* header =
-          std::launder(reinterpret_cast<const VkDeviceFaultVendorBinaryHeaderVersionOneEXT*>(info.pVendorBinaryData));
-      const char hexDigits[] = "0123456789abcdef";
-      char uuid[VK_UUID_SIZE * 2 + 1] = {};
-      for (uint32_t i = 0; i < VK_UUID_SIZE; ++i) {
-        uuid[i * 2 + 0] = hexDigits[(header->pipelineCacheUUID[i] >> 4) & 0xF];
-        uuid[i * 2 + 1] = hexDigits[header->pipelineCacheUUID[i] & 0xF];
-      }
-      LLOGW("VkDeviceFaultVendorBinaryHeaderVersionOne:");
-      LLOGW("   headerSize        : %u\n", header->headerSize);
-      LLOGW("   headerVersion     : %u\n", (uint32_t)header->headerVersion);
-      LLOGW("   vendorID          : %u\n", header->vendorID);
-      LLOGW("   deviceID          : %u\n", header->deviceID);
-      LLOGW("   driverVersion     : %u\n", header->driverVersion);
-      LLOGW("   pipelineCacheUUID : %s\n", uuid);
-      if (header->applicationNameOffset && header->applicationNameOffset < binarySize) {
-        LLOGW("   applicationName   : %s\n", (const char*)info.pVendorBinaryData + header->applicationNameOffset);
-      }
-      LLOGW("   applicationVersion: %i.%i.%i\n",
-            VK_API_VERSION_MAJOR(header->applicationVersion),
-            VK_API_VERSION_MINOR(header->applicationVersion),
-            VK_API_VERSION_PATCH(header->applicationVersion));
-      if (header->engineNameOffset && header->engineNameOffset < binarySize) {
-        LLOGW("   engineName        : %s\n", (const char*)info.pVendorBinaryData + header->engineNameOffset);
-      }
-      LLOGW("   engineVersion     : %i.%i.%i\n",
-            VK_API_VERSION_MAJOR(header->engineVersion),
-            VK_API_VERSION_MINOR(header->engineVersion),
-            VK_API_VERSION_PATCH(header->engineVersion));
-      LLOGW("   apiVersion        : %i.%i.%i.%i\n",
-            VK_API_VERSION_MAJOR(header->apiVersion),
-            VK_API_VERSION_MINOR(header->apiVersion),
-            VK_API_VERSION_PATCH(header->apiVersion),
-            VK_API_VERSION_VARIANT(header->apiVersion));
-    }
+  if (result == VK_ERROR_DEVICE_LOST) {
+    lvk::onVkAssertFailed(result);
   }
   VK_ASSERT(result);
   LVK_PROFILER_ZONE_END();
@@ -4763,6 +4798,7 @@ lvk::VulkanContext::~VulkanContext() {
   }
 
   // Device has to be destroyed prior to Instance
+  lvk::setDeviceFaultDevice(VK_NULL_HANDLE);
   vkDestroyDevice(vkDevice_, nullptr);
 
   if (vkDebugUtilsMessenger_) {
@@ -8349,6 +8385,7 @@ lvk::Result lvk::VulkanContext::initContext(const HWDeviceDesc& desc) {
     addOptionalExtension(VK_EXT_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME, has_KHR_swapchain_maintenance1_, &swapchainMaintenance1Features);
   }
   addOptionalExtension(VK_EXT_HDR_METADATA_EXTENSION_NAME, has_EXT_hdr_metadata_);
+  addOptionalExtension(VK_AMD_BUFFER_MARKER_EXTENSION_NAME, has_AMD_buffer_marker_);
   if (!addOptionalExtension(VK_KHR_DEVICE_FAULT_EXTENSION_NAME, has_EXT_device_fault_, &deviceFaultFeatures)) {
     addOptionalExtension(VK_EXT_DEVICE_FAULT_EXTENSION_NAME, has_EXT_device_fault_, &deviceFaultFeatures);
   }
@@ -8542,6 +8579,9 @@ lvk::Result lvk::VulkanContext::initContext(const HWDeviceDesc& desc) {
 
   immediate_ = std::make_unique<lvk::VulkanImmediateCommands>(
       vkDevice_, deviceQueues_.graphicsQueueFamilyIndex, has_EXT_device_fault_, "VulkanContext::immediate_");
+  if (has_EXT_device_fault_) {
+    lvk::setDeviceFaultDevice(vkDevice_);
+  }
 
   if (deviceQueues_.computeQueueFamilyIndex != DeviceQueues::INVALID &&
       deviceQueues_.computeQueueFamilyIndex != deviceQueues_.graphicsQueueFamilyIndex) {
