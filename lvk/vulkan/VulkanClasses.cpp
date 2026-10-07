@@ -2525,8 +2525,9 @@ void lvk::CommandBuffer::cmdTransitionToShaderReadOnly(const ldr::Span<TextureHa
 
     LVK_ASSERT(!img.isSwapchainImage_);
 
-    // transition only non-multisampled images - MSAA images cannot be accessed from shaders
-    if (img.vkSamples_ != VK_SAMPLE_COUNT_1_BIT) {
+    // multisampled images are shader-readable through the texture2DMS array when they have sampled usage;
+    // skipping them left render targets in COLOR_ATTACHMENT_OPTIMAL with no barrier before the read
+    if (img.vkSamples_ != VK_SAMPLE_COUNT_1_BIT && !img.isSampledImage()) {
       continue;
     }
     LVK_ASSERT_MSG(img.vkUsageFlags_ & VK_IMAGE_USAGE_SAMPLED_BIT,
