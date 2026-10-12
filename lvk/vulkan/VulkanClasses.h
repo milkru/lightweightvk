@@ -50,6 +50,7 @@ struct VulkanBuffer final {
   VkMemoryPropertyFlags vkMemFlags_ = 0;
   void* mappedPtr_ = nullptr;
   bool isCoherentMemory_ = false;
+  char debugName_[64] = {};
 };
 
 struct VulkanImage final {
@@ -774,6 +775,9 @@ class VulkanContext final : public IContext {
 
   void* getVmaAllocator() const;
 
+  // prints every live or recently destroyed buffer overlapping [lower, upper] (the device fault report)
+  void logBuffersInRange(VkDeviceAddress lower, VkDeviceAddress upper) const;
+
   void checkAndUpdateDescriptorSets();
   void bindDefaultDescriptorSets(VkCommandBuffer cmdBuf, VkPipelineBindPoint bindPoint, VkPipelineLayout layout) const;
 
@@ -951,6 +955,16 @@ class VulkanContext final : public IContext {
   ldr::Pool<lvk::RayTracingPipeline, lvk::RayTracingPipelineState> rayTracingPipelinesPool_;
   ldr::Pool<lvk::Sampler, VkSampler> samplersPool_;
   ldr::Pool<lvk::Buffer, lvk::VulkanBuffer> buffersPool_;
+  // the last kNumDestroyedBuffers destroyed buffers: a device fault on freed memory resolves against these
+  struct DestroyedBuffer {
+    VkDeviceAddress address = 0;
+    VkDeviceSize size = 0;
+    uint64_t present = 0;
+    char debugName[64] = {};
+  };
+  enum { kNumDestroyedBuffers = 256 };
+  DestroyedBuffer destroyedBuffers_[kNumDestroyedBuffers] = {};
+  uint32_t destroyedBuffersHead_ = 0;
   ldr::Pool<lvk::Texture, lvk::VulkanImage> texturesPool_;
   ldr::Pool<lvk::QueryPool, VkQueryPool> queriesPool_;
   ldr::Pool<lvk::AccelerationStructure, lvk::AccelerationStructure> accelStructuresPool_;

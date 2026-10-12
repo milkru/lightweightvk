@@ -81,6 +81,8 @@ struct StageAccess {
 
 namespace lvk {
 
+class VulkanContext;
+
 VkSemaphore createSemaphore(VkDevice device, const char* debugName);
 VkSemaphore createSemaphoreTimeline(VkDevice device, uint64_t initialValue, const char* debugName);
 VkFence createFence(VkDevice device, const char* debugName, bool isSignaled = false);
@@ -136,10 +138,11 @@ void setResultFrom(Result* outResult, VkResult result);
 Result getResultFromVkResult(VkResult result);
 const char* getVulkanResultString(VkResult result);
 const char* getVkDeviceFaultAddressTypeString(VkDeviceFaultAddressTypeEXT type);
-// prints the VK_EXT_device_fault report of `device` (description, faulting addresses, vendor info)
-void logDeviceFault(VkDevice device);
+// prints the VK_EXT_device_fault report of `device` (description, faulting addresses, vendor info); with `ctx`, each faulting
+// address range also names the buffers it falls in
+void logDeviceFault(VkDevice device, const VulkanContext* ctx = nullptr);
 // the device whose fault report VK_ASSERT() prints on VK_ERROR_DEVICE_LOST (VK_NULL_HANDLE = none)
-void setDeviceFaultDevice(VkDevice device);
+void setDeviceFaultDevice(VkDevice device, const VulkanContext* ctx = nullptr);
 // called once after the fault report on the first VK_ERROR_DEVICE_LOST (application breadcrumbs)
 void setDeviceLostCallback(void (*callback)(void*), void* userData);
 void onVkAssertFailed(VkResult result);

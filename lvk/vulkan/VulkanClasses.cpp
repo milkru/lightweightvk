@@ -1643,7 +1643,7 @@ lvk::Result lvk::VulkanSwapchain::present(VkSemaphore waitSemaphore) {
   return Result();
 }
 
-void lvk::logDeviceFault(VkDevice device) {
+void lvk::logDeviceFault(VkDevice device, const VulkanContext* ctx) {
   VkDeviceFaultCountsEXT count = {
       .sType = VK_STRUCTURE_TYPE_DEVICE_FAULT_COUNTS_EXT,
   };
@@ -1666,6 +1666,9 @@ void lvk::logDeviceFault(VkDevice device) {
           lowerAddress,
           upperAddress,
           getVkDeviceFaultAddressTypeString(aInfo.addressType));
+    if (ctx) {
+      ctx->logBuffersInRange(lowerAddress, upperAddress);
+    }
   }
   for (const VkDeviceFaultVendorInfoEXT& vInfo : vendorInfo) {
     LLOGW("...caused by `%s` with error code %" PRIx64 " and data %" PRIx64 "\n",
@@ -1716,12 +1719,14 @@ void lvk::logDeviceFault(VkDevice device) {
 // VK_ERROR_DEVICE_LOST: the GPU fault surfaces at whatever call comes next, not
 // only at a submit. Once per fault; every later call fails the same way.
 static VkDevice sDeviceFaultDevice = VK_NULL_HANDLE;
+static const lvk::VulkanContext* sDeviceFaultContext = nullptr;
 static void (*sDeviceLostCallback)(void*) = nullptr;
 static void* sDeviceLostUserData = nullptr;
 static bool sDeviceLostReported = false;
 
-void lvk::setDeviceFaultDevice(VkDevice device) {
+void lvk::setDeviceFaultDevice(VkDevice device, const VulkanContext* ctx) {
   sDeviceFaultDevice = device;
+  sDeviceFaultContext = ctx;
   sDeviceLostReported = false;
 }
 
@@ -1736,7 +1741,7 @@ void lvk::onVkAssertFailed(VkResult result) {
   }
   sDeviceLostReported = true;
   if (sDeviceFaultDevice) {
-    lvk::logDeviceFault(sDeviceFaultDevice);
+    lvk::logDeviceFault(sDeviceFaultDevice, sDeviceFaultContext);
   }
   if (sDeviceLostCallback) {
     sDeviceLostCallback(sDeviceLostUserData);
@@ -6711,7 +6716,6 @@ void lvk::VulkanContext::destroy(lvk::RayTracingPipelineHandle handle) {
   }
 
   free(rtps->specConstantDataStorage_);
-  LLOGL("destroy: ray tracing pipeline %p (present %llu)\n", (void*)rtps->pipeline_, (unsigned long long)presentsQueued_);
 
   deferredTask(
       std::packaged_task<void()>([device = getVkDevice(), pipeline = rtps->pipeline_]() { vkDestroyPipeline(device, pipeline, nullptr); }));
@@ -6729,7 +6733,6 @@ void lvk::VulkanContext::destroy(lvk::ComputePipelineHandle handle) {
   }
 
   free(cps->specConstantDataStorage_);
-  LLOGL("destroy: compute pipeline %p (present %llu)\n", (void*)cps->pipeline_, (unsigned long long)presentsQueued_);
 
   deferredTask(
       std::packaged_task<void()>([device = getVkDevice(), pipeline = cps->pipeline_]() { vkDestroyPipeline(device, pipeline, nullptr); }));
@@ -6747,7 +6750,6 @@ void lvk::VulkanContext::destroy(lvk::RenderPipelineHandle handle) {
   }
 
   free(rps->specConstantDataStorage_);
-  LLOGL("destroy: render pipeline %p (present %llu)\n", (void*)rps->pipeline_, (unsigned long long)presentsQueued_);
 
   deferredTask(
       std::packaged_task<void()>([device = getVkDevice(), pipeline = rps->pipeline_]() { vkDestroyPipeline(device, pipeline, nullptr); }));
@@ -6775,7 +6777,6 @@ void lvk::VulkanContext::destroy(SamplerHandle handle) {
   VkSampler sampler = *samplersPool_.get(handle);
 
   samplersPool_.destroy(handle);
-  LLOGL("destroy: sampler (present %llu)\n", (unsigned long long)presentsQueued_);
 
   deferredTask(std::packaged_task<void()>([device = vkDevice_, sampler = sampler]() { vkDestroySampler(device, sampler, nullptr); }));
 }
@@ -6793,10 +6794,13 @@ void lvk::VulkanContext::destroy(BufferHandle handle) {
     return;
   }
 
-  LLOGL("destroy: buffer %llu bytes at 0x%llx (present %llu)\n",
-        (unsigned long long)buf->bufferSize_,
-        (unsigned long long)buf->vkDeviceAddress_,
-        (unsigned long long)presentsQueued_);
+  if (buf->vkDeviceAddress_) {
+    DestroyedBuffer& d = destroyedBuffers_[destroyedBuffersHead_++ % kNumDestroyedBuffers];
+    d.address = buf->vkDeviceAddress_;
+    d.size = buf->bufferSize_;
+    d.present = presentsQueued_;
+    memcpy(d.debugName, buf->debugName_, sizeof(d.debugName));
+  }
 
   if (LVK_VULKAN_USE_VMA) {
     if (buf->mappedPtr_) {
@@ -6829,14 +6833,6 @@ void lvk::VulkanContext::destroy(lvk::TextureHandle handle) {
   if (!tex) {
     return;
   }
-
-  LLOGL("destroy: texture '%s' %ux%u format %d samples %d (present %llu)\n",
-        tex->debugName_,
-        tex->vkExtent_.width,
-        tex->vkExtent_.height,
-        (int)tex->vkImageFormat_,
-        (int)tex->vkSamples_,
-        (unsigned long long)presentsQueued_);
 
   deferredTask(std::packaged_task<void()>(
       [device = getVkDevice(), imageView = tex->imageView_]() { vkDestroyImageView(device, imageView, nullptr); }));
@@ -6908,8 +6904,6 @@ void lvk::VulkanContext::destroy(lvk::AccelStructHandle handle) {
   SCOPE_EXIT {
     accelStructuresPool_.destroy(handle);
   };
-
-  LLOGL("destroy: acceleration structure (present %llu)\n", (unsigned long long)presentsQueued_);
 
   deferredTask(std::packaged_task<void()>(
       [device = vkDevice_, as = accelStruct->vkHandle]() { vkDestroyAccelerationStructureKHR(device, as, nullptr); }));
@@ -8576,7 +8570,7 @@ lvk::Result lvk::VulkanContext::initContext(const HWDeviceDesc& desc) {
   immediate_ = std::make_unique<lvk::VulkanImmediateCommands>(
       vkDevice_, deviceQueues_.graphicsQueueFamilyIndex, has_EXT_device_fault_, "VulkanContext::immediate_");
   if (has_EXT_device_fault_) {
-    lvk::setDeviceFaultDevice(vkDevice_);
+    lvk::setDeviceFaultDevice(vkDevice_, this);
   }
 
   if (deviceQueues_.computeQueueFamilyIndex != DeviceQueues::INVALID &&
@@ -9034,11 +9028,9 @@ lvk::BufferHandle lvk::VulkanContext::createBuffer(VkDeviceSize bufferSize,
     };
     buf.vkDeviceAddress_ = vkGetBufferDeviceAddress(vkDevice_, &ai);
     LVK_ASSERT(buf.vkDeviceAddress_);
-    // a device-fault address resolves against these lines
-    LLOGL("buffer '%s': %llu bytes at 0x%llx\n",
-          debugName ? debugName : "",
-          (unsigned long long)bufferSize,
-          (unsigned long long)buf.vkDeviceAddress_);
+  }
+  if (debugName) {
+    snprintf(buf.debugName_, sizeof(buf.debugName_), "%s", debugName);
   }
 
   return buffersPool_.create(std::move(buf));
@@ -9385,6 +9377,27 @@ void lvk::VulkanContext::deferredTask(std::packaged_task<void()>&& task, SubmitH
   pimpl_->deferredTasks_.emplace_back(std::move(task), handle, immediate_->getSubmitCounter(), presentsQueued_);
 }
 
+void lvk::VulkanContext::logBuffersInRange(VkDeviceAddress lower, VkDeviceAddress upper) const {
+  for (const lvk::VulkanBuffer& buf : buffersPool_.objects_) {
+    if (buf.vkDeviceAddress_ && buf.vkDeviceAddress_ <= upper && lower < buf.vkDeviceAddress_ + buf.bufferSize_) {
+      LLOGW("......in live buffer '%s': %llu bytes at 0x%llx\n",
+            buf.debugName_,
+            (unsigned long long)buf.bufferSize_,
+            (unsigned long long)buf.vkDeviceAddress_);
+    }
+  }
+  for (const DestroyedBuffer& d : destroyedBuffers_) {
+    if (d.address && d.address <= upper && lower < d.address + d.size) {
+      LLOGW("......in buffer '%s' DESTROYED at present %llu: %llu bytes at 0x%llx (now %llu)\n",
+            d.debugName,
+            (unsigned long long)d.present,
+            (unsigned long long)d.size,
+            (unsigned long long)d.address,
+            (unsigned long long)presentsQueued_);
+    }
+  }
+}
+
 void* lvk::VulkanContext::getVmaAllocator() const {
   return pimpl_->vma_;
 }
@@ -9409,17 +9422,9 @@ void lvk::VulkanContext::processDeferredTasks() const {
   // late acquire the whole next frame's CPU work overlaps the present. So each
   // task also holds until every present queued before it has completed.
   const uint32_t retired = immediate_->getRetiredSubmitId();
-  uint32_t numRan = 0;
   while (it != pimpl_->deferredTasks_.end() && immediate_->isReady(it->handle_, true) &&
          retired > it->queuedSubmitId_ && it->presentId_ <= presentsCompleted_) {
     (it++)->task_();
-    numRan++;
-  }
-  if (numRan) {
-    LLOGL("deferred destroy: ran %u tasks (present %llu, completed %llu)\n",
-          numRan,
-          (unsigned long long)presentsQueued_,
-          (unsigned long long)presentsCompleted_);
   }
 
   pimpl_->deferredTasks_.erase(pimpl_->deferredTasks_.begin(), it);
