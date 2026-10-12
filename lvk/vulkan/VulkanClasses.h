@@ -135,7 +135,11 @@ class VulkanSwapchain final {
   VulkanSwapchain(VulkanContext& ctx, uint32_t width, uint32_t height);
   ~VulkanSwapchain();
 
-  Result present(VkSemaphore waitSemaphore);
+  Result present();
+  // the semaphore the submit using the acquired image signals and the present of that image waits on
+  VkSemaphore getPresentSemaphore() const {
+    return presentSemaphore_[currentImageIndex_];
+  }
   VkImage getCurrentVkImage() const;
   VkImageView getCurrentVkImageView() const;
   TextureHandle getCurrentTexture();
@@ -202,6 +206,10 @@ class VulkanSwapchain final {
     acquireSemConsumedValue_[pendingAcquireRingIdx_] = timelineValue;
   }
   VkFence presentFence_[LVK_MAX_SWAPCHAIN_IMAGES] = {};
+  // One present-wait semaphore per image. Reusing it is safe once the same image is acquired again (its previous present has then
+  // consumed the wait), which needs no present fence: a per-command-buffer semaphore cycles far faster than presents complete and,
+  // without VK_KHR_swapchain_maintenance1, nothing proves its present is done (VUID-vkQueueSubmit2-semaphore-03868).
+  VkSemaphore presentSemaphore_[LVK_MAX_SWAPCHAIN_IMAGES] = {};
   VkFence acquireFence_[kAcquireRing] = {}; // remove once VK_EXT_swapchain_maintenance1 becomes mandatory
   uint64_t presentId_[LVK_MAX_SWAPCHAIN_IMAGES] = {}; // VulkanContext::presentsQueued_ when this image was last presented
   uint64_t presentIdPrev_[LVK_MAX_SWAPCHAIN_IMAGES] = {}; // ...and the present before that (the non-maintenance1 watermark)
@@ -240,13 +248,13 @@ class VulkanImmediateCommands final {
   void waitSemaphore(VkSemaphore semaphore);
   void waitTimelineSemaphore(VkSemaphore semaphore, uint64_t value);
   void signalSemaphore(VkSemaphore semaphore, uint64_t signalValue);
-  VkSemaphore acquireLastSubmitSemaphore();
+  // the next submit also signals this binary semaphore (the swapchain image's present-wait semaphore)
+  void signalPresentSemaphore(VkSemaphore semaphore);
   // timeline semaphore signaled by every submit() on this queue; lets another queue wait for a specific submission to complete
   VkSemaphore getTimelineSemaphore() const {
     return submitTimelineSemaphore_;
   }
   uint64_t getTimelineValue(SubmitHandle handle) const;
-  void setLastPresentSemaphore(VkSemaphore semaphore, VkFence presentFence);
   VkFence getVkFence(SubmitHandle handle) const;
   SubmitHandle getLastSubmitHandle() const;
   SubmitHandle getNextSubmitHandle() const;
@@ -278,8 +286,8 @@ class VulkanImmediateCommands final {
                                          .stageMask = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT}; // timeline wait (cross-queue)
   VkSemaphoreSubmitInfo signalSemaphore_ = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
                                             .stageMask = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT}; // extra "signal" semaphore
-  VkSemaphore lastPresentSemaphore_ = VK_NULL_HANDLE; // present-wait semaphore of the last vkQueuePresentKHR()
-  VkFence lastPresentFence_ = VK_NULL_HANDLE; // its present fence; acquire() waits it before reusing that slot
+  VkSemaphoreSubmitInfo presentSemaphore_ = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
+                                             .stageMask = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT}; // the swapchain image's present wait
   VkSemaphore submitTimelineSemaphore_ = VK_NULL_HANDLE; // monotonic timeline signaled by every submit() (cross-queue waits)
   uint32_t numAvailableCommandBuffers_ = kMaxCommandBuffers;
   uint32_t submitCounter_ = 1;

@@ -1399,6 +1399,10 @@ lvk::VulkanSwapchain::VulkanSwapchain(VulkanContext& ctx, uint32_t width, uint32
     }
   }
 
+  for (uint32_t i = 0; i < numSwapchainImages_; i++) {
+    presentSemaphore_[i] = lvk::createSemaphore(device_, "Semaphore: swapchain-present");
+  }
+
   // create images, image views and framebuffers
   for (uint32_t i = 0; i < numSwapchainImages_; i++) {
     (void)snprintf(debugNameImage, sizeof(debugNameImage) - 1, "Image: swapchain %u", i);
@@ -1444,6 +1448,10 @@ lvk::VulkanSwapchain::~VulkanSwapchain() {
   vkDestroySwapchainKHR(device_, swapchain_, nullptr);
   for (VkSemaphore sem : acquireSemaphore_) {
     vkDestroySemaphore(device_, sem, nullptr);
+  }
+  for (VkSemaphore sem : presentSemaphore_) {
+    if (sem)
+      vkDestroySemaphore(device_, sem, nullptr);
   }
   for (VkFence fence : presentFence_) {
     if (fence)
@@ -1506,19 +1514,12 @@ lvk::TextureHandle lvk::VulkanSwapchain::getCurrentTexture() {
 
     // The NEWEST present must complete before we go on (its fence: the image
     // presented last frame, still currentImageIndex_ until the acquire below).
-    // This keeps the invariant the command-buffer reuse guard depends on: at
-    // most ONE present is ever pending past an acquire, and its wait semaphore
-    // is the guarded one — otherwise a busy frame cycles all 64 command
-    // buffers and re-signals a semaphore an unfinished present still waits on
-    // (VUID-vkQueueSubmit2-semaphore-03868). It also advances the
-    // completed-present watermark deferred destruction waits on (see
-    // VulkanContext::processDeferredTasks): presents complete in order, so
-    // "the newest present completed" covers every older one.
+    // This advances the completed-present watermark deferred destruction waits
+    // on (see VulkanContext::processDeferredTasks): presents complete in order,
+    // so "the newest present completed" covers every older one.
     if (ctx_.has_KHR_swapchain_maintenance1_ && presentFence_[currentImageIndex_]) {
       VK_ASSERT(vkWaitForFences(device_, 1, &presentFence_[currentImageIndex_], VK_TRUE, UINT64_MAX));
       VK_ASSERT(vkResetFences(device_, 1, &presentFence_[currentImageIndex_]));
-      // present done; drop the reuse guard (its fence was just reset)
-      ctx_.immediate_->setLastPresentSemaphore(VK_NULL_HANDLE, VK_NULL_HANDLE);
       if (presentId_[currentImageIndex_] > ctx_.presentsCompleted_) {
         ctx_.presentsCompleted_ = presentId_[currentImageIndex_];
       }
@@ -1600,7 +1601,8 @@ bool lvk::VulkanSwapchain::setCurrentPresentMode(VkPresentModeKHR mode) {
   return false;
 }
 
-lvk::Result lvk::VulkanSwapchain::present(VkSemaphore waitSemaphore) {
+lvk::Result lvk::VulkanSwapchain::present() {
+  const VkSemaphore waitSemaphore = presentSemaphore_[currentImageIndex_];
   LVK_PROFILER_FUNCTION();
 
   LVK_PROFILER_ZONE("vkQueuePresent()", LVK_PROFILER_COLOR_PRESENT);
@@ -1622,9 +1624,6 @@ lvk::Result lvk::VulkanSwapchain::present(VkSemaphore waitSemaphore) {
     VK_ASSERT(r);
   }
   LVK_PROFILER_ZONE_END();
-
-  // let acquire() gate reuse of this command buffer's slot until the present has consumed its wait semaphore
-  ctx_.immediate_->setLastPresentSemaphore(waitSemaphore, presentFence_[currentImageIndex_]);
 
   // this present is now in flight — deferred destruction queued from here on
   // holds until its completion is observed (see getCurrentTexture())
@@ -1877,13 +1876,6 @@ const lvk::VulkanImmediateCommands::CommandBufferWrapper& lvk::VulkanImmediateCo
   LVK_ASSERT_MSG(current, "No available command buffers");
   LVK_ASSERT(current->cmdBufAllocated_ != VK_NULL_HANDLE);
 
-  // wait for a pending present still using this slot's semaphore before reusing it (VUID-vkQueueSubmit2-semaphore-03868)
-  if (current->semaphore_ == lastPresentSemaphore_ && lastPresentFence_) {
-    VK_ASSERT(vkWaitForFences(device_, 1, &lastPresentFence_, VK_TRUE, UINT64_MAX));
-    lastPresentSemaphore_ = VK_NULL_HANDLE;
-    lastPresentFence_ = VK_NULL_HANDLE;
-  }
-
   current->handle_.submitId_ = submitCounter_;
   numAvailableCommandBuffers_--;
 
@@ -1987,7 +1979,8 @@ lvk::SubmitHandle lvk::VulkanImmediateCommands::submit(const CommandBufferWrappe
   if (waitTimeline_.semaphore) {
     waitSemaphores[numWaitSemaphores++] = waitTimeline_;
   }
-  // Signals: per-slot binary semaphore (intra-queue chain / present) + the monotonic cross-queue timeline + an optional extra signal.
+  // Signals: per-slot binary semaphore (intra-queue chain) + the monotonic cross-queue timeline + an optional extra signal + the
+  // swapchain image's present semaphore when this submit presents.
   // The next timeline value is one past the most recent submission's; the highest value always belongs to the last submit,
   // so we read it back from that slot instead of caching a separate running counter.
   const uint64_t prevTimelineValue = lastSubmitHandle_.empty() ? 0 : buffers_[lastSubmitHandle_.bufferIndex_].signaledTimelineValue_;
@@ -2001,10 +1994,14 @@ lvk::SubmitHandle lvk::VulkanImmediateCommands::submit(const CommandBufferWrappe
                             .value = timelineValue,
                             .stageMask = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT},
       {},
+      {},
   };
   uint32_t numSignalSemaphores = 2;
   if (signalSemaphore_.semaphore) {
     signalSemaphores[numSignalSemaphores++] = signalSemaphore_;
+  }
+  if (presentSemaphore_.semaphore) {
+    signalSemaphores[numSignalSemaphores++] = presentSemaphore_;
   }
   wrapper.signaledTimelineValue_ = timelineValue;
 
@@ -2037,6 +2034,7 @@ lvk::SubmitHandle lvk::VulkanImmediateCommands::submit(const CommandBufferWrappe
   waitSemaphore_.semaphore = VK_NULL_HANDLE;
   waitTimeline_.semaphore = VK_NULL_HANDLE;
   signalSemaphore_.semaphore = VK_NULL_HANDLE;
+  presentSemaphore_.semaphore = VK_NULL_HANDLE;
 
   // reset
   wrapper.isEncoding_ = false;
@@ -2070,13 +2068,10 @@ void lvk::VulkanImmediateCommands::signalSemaphore(VkSemaphore semaphore, uint64
   signalSemaphore_.value = signalValue;
 }
 
-VkSemaphore lvk::VulkanImmediateCommands::acquireLastSubmitSemaphore() {
-  return std::exchange(lastSubmitSemaphore_.semaphore, VK_NULL_HANDLE);
-}
+void lvk::VulkanImmediateCommands::signalPresentSemaphore(VkSemaphore semaphore) {
+  LVK_ASSERT(presentSemaphore_.semaphore == VK_NULL_HANDLE);
 
-void lvk::VulkanImmediateCommands::setLastPresentSemaphore(VkSemaphore semaphore, VkFence presentFence) {
-  lastPresentSemaphore_ = semaphore;
-  lastPresentFence_ = presentFence;
+  presentSemaphore_.semaphore = semaphore;
 }
 
 VkFence lvk::VulkanImmediateCommands::getVkFence(lvk::SubmitHandle handle) const {
@@ -4886,6 +4881,7 @@ lvk::SubmitHandle lvk::VulkanContext::submit(lvk::ICommandBuffer& commandBuffer,
     // we wait for this value next time we want to acquire this swapchain image
     swapchain_->timelineWaitValues_[swapchain_->currentImageIndex_] = signalValue;
     immediate_->signalSemaphore(timelineSemaphore_, signalValue);
+    immediate_->signalPresentSemaphore(swapchain_->getPresentSemaphore());
   }
 
   // Submit on the command buffer's own queue (graphics or async-compute)
@@ -4934,7 +4930,7 @@ lvk::SubmitHandle lvk::VulkanContext::submit(lvk::ICommandBuffer& commandBuffer,
   vkCmdBuffer->lastSubmitHandle_ = imm.submit(*vkCmdBuffer->wrapper_);
 
   if (shouldPresent) {
-    swapchain_->present(immediate_->acquireLastSubmitSemaphore());
+    swapchain_->present();
   }
 
   processDeferredTasks();
@@ -8733,8 +8729,6 @@ lvk::Result lvk::VulkanContext::initSwapchain(uint32_t width, uint32_t height) {
     // destroy the old swapchain first
     // TODO: replace with VK_EXT_swapchain_maintenance1
     VK_ASSERT(vkDeviceWaitIdle(vkDevice_));
-    // the guard fence belongs to the swapchain we are about to destroy
-    immediate_->setLastPresentSemaphore(VK_NULL_HANDLE, VK_NULL_HANDLE);
     swapchain_ = nullptr;
     vkDestroySemaphore(vkDevice_, timelineSemaphore_, nullptr);
   }
