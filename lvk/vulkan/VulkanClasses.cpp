@@ -6816,6 +6816,16 @@ void lvk::VulkanContext::destroy(BufferHandle handle) {
   }
 }
 
+void lvk::VulkanContext::swapTextures(lvk::TextureHandle a, lvk::TextureHandle b) {
+  lvk::VulkanImage* imgA = texturesPool_.get(a);
+  lvk::VulkanImage* imgB = texturesPool_.get(b);
+  if (!LVK_VERIFY(imgA && imgB)) {
+    return;
+  }
+  std::swap(*imgA, *imgB);
+  awaitingCreation_ = true; // rewrite the bindless descriptors
+}
+
 void lvk::VulkanContext::destroy(lvk::TextureHandle handle) {
   LVK_PROFILER_FUNCTION_COLOR(LVK_PROFILER_COLOR_DESTROY);
 

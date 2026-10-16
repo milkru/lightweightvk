@@ -1207,6 +1207,10 @@ class IContext {
   // the number of bytes released; `outStats` reports what the driver actually
   // said, which is what separates "query failed" from "no gain available".
   virtual uint64_t compactBLASBatch(const AccelStructHandle* handles, uint32_t count, AccelStructCompactStats* outStats = nullptr) = 0;
+  // Exchange the images behind two texture handles, so each handle keeps its bindless index while the
+  // other's image shows through it (mip streaming swaps a resized image in, then destroys the old one).
+  // Frames already submitted keep sampling the image they were recorded with.
+  virtual void swapTextures(TextureHandle a, TextureHandle b) = 0;
 
   virtual void destroy(ComputePipelineHandle handle) = 0;
   virtual void destroy(RenderPipelineHandle handle) = 0;
