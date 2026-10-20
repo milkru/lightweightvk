@@ -8376,8 +8376,19 @@ lvk::Result lvk::VulkanContext::initContext(const HWDeviceDesc& desc) {
                         has_KHR_acceleration_structure_,
                         &accelerationStructureFeatures);
   addOptionalExtension(VK_KHR_RAY_QUERY_EXTENSION_NAME, has_KHR_ray_query_, &rayQueryFeatures);
-  addOptionalExtension(
-      VK_KHR_COMPUTE_SHADER_DERIVATIVES_EXTENSION_NAME, has_KHR_compute_shader_derivatives_, &computeShaderDerivativesFeatures);
+  if (addOptionalExtension(
+          VK_KHR_COMPUTE_SHADER_DERIVATIVES_EXTENSION_NAME, has_KHR_compute_shader_derivatives_, &computeShaderDerivativesFeatures)) {
+    // a device may expose the extension with only the linear mode; requesting quads there fails vkCreateDevice()
+    VkPhysicalDeviceComputeShaderDerivativesFeaturesKHR supported = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COMPUTE_SHADER_DERIVATIVES_FEATURES_KHR,
+    };
+    VkPhysicalDeviceFeatures2 features2 = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
+        .pNext = &supported,
+    };
+    vkGetPhysicalDeviceFeatures2(vkPhysicalDevice_, &features2);
+    computeShaderDerivativesFeatures.computeDerivativeGroupQuads = supported.computeDerivativeGroupQuads;
+  }
   addOptionalExtension(VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME, has_KHR_ray_tracing_pipeline_, &rayTracingFeatures);
   addOptionalExtension(
       VK_EXT_RAY_TRACING_INVOCATION_REORDER_EXTENSION_NAME, has_EXT_ray_tracing_invocation_reorder, &rayTracingInvocationReorderFeatures);
