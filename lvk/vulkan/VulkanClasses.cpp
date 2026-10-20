@@ -8387,9 +8387,8 @@ lvk::Result lvk::VulkanContext::initContext(const HWDeviceDesc& desc) {
   }
   addOptionalExtension(VK_EXT_HDR_METADATA_EXTENSION_NAME, has_EXT_hdr_metadata_);
   addOptionalExtension(VK_AMD_BUFFER_MARKER_EXTENSION_NAME, has_AMD_buffer_marker_);
-  if (!addOptionalExtension(VK_KHR_DEVICE_FAULT_EXTENSION_NAME, has_EXT_device_fault_, &deviceFaultFeatures)) {
-    addOptionalExtension(VK_EXT_DEVICE_FAULT_EXTENSION_NAME, has_EXT_device_fault_, &deviceFaultFeatures);
-  }
+  // the EXT only: logDeviceFault() calls vkGetDeviceFaultInfoEXT(), which the KHR extension doesn't provide
+  addOptionalExtension(VK_EXT_DEVICE_FAULT_EXTENSION_NAME, has_EXT_device_fault_, &deviceFaultFeatures);
   addOptionalExtension(VK_EXT_SHADER_TILE_IMAGE_EXTENSION_NAME, has_EXT_shader_tile_image, &shaderTileImageFeatures);
   addOptionalExtension(VK_KHR_SHARED_PRESENTABLE_IMAGE_EXTENSION_NAME, has_KHR_shared_presentable_image_);
   addOptionalExtension(
