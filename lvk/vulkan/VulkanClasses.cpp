@@ -1835,12 +1835,6 @@ void lvk::VulkanImmediateCommands::purge() {
       VK_ASSERT(vkResetFences(device_, 1, &buf.fence_));
       buf.cmdBuf_ = VK_NULL_HANDLE;
       numAvailableCommandBuffers_++;
-      // newest submit known to have RETIRED — deferred destruction waits for
-      // this to pass the submit the object was destroyed on (see
-      // processDeferredTasks)
-      if (buf.handle_.submitId_ > retiredSubmitId_) {
-        retiredSubmitId_ = buf.handle_.submitId_;
-      }
     } else {
       if (result != VK_TIMEOUT) {
         VK_ASSERT(result);
@@ -2102,6 +2096,19 @@ lvk::SubmitHandle lvk::VulkanImmediateCommands::getLastSubmitHandle() const {
 
 lvk::SubmitHandle lvk::VulkanImmediateCommands::getNextSubmitHandle() const {
   return nextSubmitHandle_;
+}
+
+// Every submit up to the returned id has retired. Ids are stamped at acquire, so a command buffer still being
+// recorded keeps the id it was acquired with while later ones submit and retire ahead of it: the newest
+// retired id is not a watermark, the oldest command buffer still encoding or in flight is.
+uint32_t lvk::VulkanImmediateCommands::getRetiredSubmitId() const {
+  uint32_t oldest = submitCounter_;
+  for (const CommandBufferWrapper& buf : buffers_) {
+    if (buf.cmdBuf_ != VK_NULL_HANDLE && buf.handle_.submitId_ < oldest) {
+      oldest = buf.handle_.submitId_;
+    }
+  }
+  return oldest - 1;
 }
 
 lvk::VulkanPipelineBuilder::VulkanPipelineBuilder()
