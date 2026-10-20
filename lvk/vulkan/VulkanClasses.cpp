@@ -1438,8 +1438,12 @@ lvk::VulkanSwapchain::VulkanSwapchain(VulkanContext& ctx, uint32_t width, uint32
 }
 
 lvk::VulkanSwapchain::~VulkanSwapchain() {
-  // every teardown/recreate path waits the device idle first, and a destroyed
-  // swapchain has no presents left to guard — release the destruction gate so
+  // vkDeviceWaitIdle() doesn't cover the presentation engine: with maintenance1 the newest present's fence is
+  // the proof it is done (older ones complete in order); without it, device idle is all there is
+  if (ctx_.has_KHR_swapchain_maintenance1_ && getNextImage_ && presentFence_[currentImageIndex_]) {
+    VK_ASSERT(vkWaitForFences(device_, 1, &presentFence_[currentImageIndex_], VK_TRUE, UINT64_MAX));
+  }
+  // a destroyed swapchain has no presents left to guard — release the destruction gate so
   // tasks queued against in-flight presents don't wait forever
   ctx_.presentsCompleted_ = ctx_.presentsQueued_;
   for (TextureHandle handle : swapchainTextures_) {
