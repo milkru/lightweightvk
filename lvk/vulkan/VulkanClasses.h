@@ -159,6 +159,9 @@ class VulkanSwapchain final {
   uint32_t currentImageIndex_ = 0; // [0...numSwapchainImages_)
   uint64_t currentFrameIndex_ = 0; // [0...+inf)
   bool getNextImage_ = true;
+  // the last acquire returned VK_ERROR_OUT_OF_DATE_KHR: nothing was acquired and its semaphore/fence will never
+  // signal, so the context recreates the swapchain instead of using it (see getCurrentSwapchainTexture())
+  bool outOfDate_ = false;
   VkSwapchainKHR swapchain_ = VK_NULL_HANDLE;
   VkSurfaceFormatKHR surfaceFormat_ = {.format = VK_FORMAT_UNDEFINED};
   VkPresentModeKHR currentPresentMode_ = VK_PRESENT_MODE_FIFO_KHR; // rewritten at swapchain creation

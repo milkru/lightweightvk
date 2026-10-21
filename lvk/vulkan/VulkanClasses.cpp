@@ -1536,6 +1536,11 @@ lvk::TextureHandle lvk::VulkanSwapchain::getCurrentTexture() {
     if (r != VK_SUCCESS && r != VK_SUBOPTIMAL_KHR && r != VK_ERROR_OUT_OF_DATE_KHR) {
       VK_ASSERT(r);
     }
+    if (r == VK_ERROR_OUT_OF_DATE_KHR) {
+      // no image: don't park a semaphore nothing will signal (the present submit would wait on it forever)
+      outOfDate_ = true;
+      return {};
+    }
     const clk::time_point t3 = clk::now();
 
     // Pacing / image reuse, keyed on the image the acquire actually returned:
@@ -7504,6 +7509,14 @@ lvk::TextureHandle lvk::VulkanContext::getCurrentSwapchainTexture() {
   }
 
   TextureHandle tex = swapchain_->getCurrentTexture();
+
+  if (!tex.valid() && swapchain_->outOfDate_) {
+    // a display change (mode switch, Win+P, monitor change) outdated the swapchain without iconifying the window;
+    // recreating it also replaces the acquire semaphores and fences that acquire left unsignaled
+    LLOGW("Swapchain out of date, recreating it\n");
+    recreateSwapchain((int)swapchain_->width_, (int)swapchain_->height_);
+    tex = hasSwapchain() ? swapchain_->getCurrentTexture() : TextureHandle{};
+  }
 
   if (!LVK_VERIFY(tex.valid())) {
     LVK_ASSERT_MSG(false, "Swapchain has no valid texture");
