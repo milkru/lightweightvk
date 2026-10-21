@@ -4518,11 +4518,9 @@ void lvk::VulkanStagingDevice::ensureStagingBufferSize(VkDeviceSize sizeNeeded) 
   // deallocate the previous staging buffer
   stagingBuffer_ = nullptr;
 
-  // if the combined size of the new staging buffer and the existing one is larger than the limit imposed by some architectures on buffers
-  // that are device and host visible, we need to wait for the current buffer to be destroyed before we can allocate a new one
-  if ((sizeNeeded + stagingBufferSize_) > ctx_.config_.maxStagingBufferSize) {
-    ctx_.waitDeferredTasks();
-  }
+  // No waitDeferredTasks() here: the staging buffer is HOST_VISIBLE only, so the combined device+host-visible size limit it
+  // guarded doesn't apply, and that wait ran every pending destroy without the submit and present watermarks (objects still
+  // used by frames in flight). The old buffer goes through the normal deferred destruction.
 
   stagingBufferSize_ = sizeNeeded;
 
