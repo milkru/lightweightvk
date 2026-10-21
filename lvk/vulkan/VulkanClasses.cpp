@@ -986,6 +986,12 @@ void lvk::VulkanImage::transitionLayout(VkCommandBuffer commandBuffer,
     src.access |= VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
     dst.access |= VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
   }
+  if (isDepthAttachment() && vkSamples_ != VK_SAMPLE_COUNT_1_BIT && oldImageLayout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL) {
+    // a multisampled depth leaving its attachment layout may still be the SOURCE of a depth resolve, which reads it in the
+    // colour-attachment-output stage (same spec section)
+    src.stage |= VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+    src.access |= VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT;
+  }
 
   const VkImageMemoryBarrier2 barrier = {
       .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
