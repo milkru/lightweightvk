@@ -506,7 +506,7 @@ VmaAllocator lvk::createVmaAllocator(VkPhysicalDevice physDev, VkDevice device, 
       .flags = VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT,
       .physicalDevice = physDev,
       .device = device,
-      // 64 MB blocks instead of VMA's 256 MB default. A block is returned to
+      // 32 MB blocks instead of VMA's 256 MB default. A block is returned to
       // the driver only once it is COMPLETELY empty, so a coarse block that
       // mixes a boot-time transient (acceleration-structure build scratch)
       // with something permanent stays reserved forever around the hole the
